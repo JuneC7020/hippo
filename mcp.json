@@ -1,0 +1,16 @@
+{
+  "mcpServers": {
+    "filesystem": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
+    },
+    "git": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-git", "."]
+    },
+    "seahorse": {
+      "command": "python",
+      "args": ["mcp_servers/seahorse_server.py"]
+    }
+  }
+}

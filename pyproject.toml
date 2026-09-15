@@ -1,0 +1,48 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hippo"
+version = "0.1.0"
+description = "Long-term memory CLI agent (MCP + Seahorse + LangGraph)"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+authors = [{name = "Minjun Choi"}]
+dependencies = [
+  "langgraph>=0.2",
+  "langgraph-checkpoint-sqlite>=2.0",
+  "langchain-openai>=0.3",
+  "langchain-core>=0.3",
+  "mcp>=1.0",
+  "langchain-seahorse>=0.5",
+  "chromadb>=0.5",
+  "typer>=0.12",
+  "rich>=13.0",
+  "pydantic>=2.0",
+  "pydantic-settings>=2.0",
+  "tiktoken>=0.7",
+  "python-dotenv>=1.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "ruff>=0.6"]
+
+[project.scripts]
+hippo = "hippo.cli:app"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP"]
