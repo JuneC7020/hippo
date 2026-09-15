@@ -13,6 +13,8 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     hippo_model: str = "gpt-4o-mini"
     hippo_demo_model: str = "gpt-4o"
+    # auto: Seahorse when SEAHORSE_API_KEY is set, else Chroma. Or force seahorse|chroma.
+    hippo_memory_backend: str = "auto"
     seahorse_api_key: str = ""
     seahorse_table_episodes: str = "hippo_episodes"
     seahorse_table_facts: str = "hippo_facts"

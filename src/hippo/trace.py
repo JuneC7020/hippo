@@ -35,4 +35,3 @@ def list_trace_ids(data_dir: Path) -> list[str]:
     if not folder.exists():
         return []
     return sorted(p.stem for p in folder.glob("*.jsonl"))
-

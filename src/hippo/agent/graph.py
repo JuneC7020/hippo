@@ -19,11 +19,24 @@ from hippo.trace import Tracer
 MAX_TOOL_STEPS = 12
 
 
-def run_once(task: str, *, model: str, api_key: str, tracer: Tracer | None = None) -> str:
+def _with_memory(system: str, recalled: list[str] | None) -> str:
+    if not recalled:
+        return system
+    return system + "\n\n" + "\n".join(recalled)
+
+
+def run_once(
+    task: str,
+    *,
+    model: str,
+    api_key: str,
+    tracer: Tracer | None = None,
+    recalled: list[str] | None = None,
+) -> str:
     llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
     msg = llm.invoke(
         [
-            {"role": "system", "content": ONESHOT_SYSTEM},
+            {"role": "system", "content": _with_memory(ONESHOT_SYSTEM, recalled)},
             {"role": "user", "content": task},
         ]
     )
@@ -60,12 +73,13 @@ async def run_agent(
     tools: list[BaseTool],
     tracer: Tracer,
     max_steps: int = MAX_TOOL_STEPS,
+    recalled: list[str] | None = None,
 ) -> str:
     llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
     bound = llm.bind_tools(tools) if tools else llm
     by_name = {t.name: t for t in tools}
     messages: list[Any] = [
-        SystemMessage(content=TOOL_SYSTEM),
+        SystemMessage(content=_with_memory(TOOL_SYSTEM, recalled)),
         HumanMessage(content=task),
     ]
     tracer.emit("run_start", task=task[:500], model=model, n_tools=len(tools))
@@ -74,9 +88,7 @@ async def run_agent(
         msg = await bound.ainvoke(messages)
         messages.append(msg)
         calls = getattr(msg, "tool_calls", None) or []
-        names = [
-            c.get("name") if isinstance(c, dict) else getattr(c, "name", "") for c in calls
-        ]
+        names = [c.get("name") if isinstance(c, dict) else getattr(c, "name", "") for c in calls]
         tracer.emit(
             "llm",
             step=step,

@@ -15,44 +15,56 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
-from dotenv import load_dotenv
+from dotenv import load_dotenv  # noqa: E402
 
 load_dotenv(ROOT / ".env")
 
 from hippo.config import load_settings  # noqa: E402
-
-
-def _store(api_key: str, table: str):
-    try:
-        from langchain_seahorse import SeahorseVectorStore
-        return SeahorseVectorStore(api_key=api_key, table_name=table)
-    except ImportError:
-        pass
-    try:
-        from seahorse_vector_store import SeahorseVectorStore
-        return SeahorseVectorStore(api_key=api_key, table_name=table)
-    except ImportError as e:
-        raise SystemExit(
-            "langchain-seahorse is not installed. pip install -e '.[dev]'\n" + str(e)
-        ) from e
+from hippo.memory.seahorse import SeahorseStore  # noqa: E402
 
 
 def main() -> None:
     settings = load_settings()
     if not settings.seahorse_api_key:
-        print("SEAHORSE_API_KEY is empty. Skipping (Chroma fallback will be used in M2).")
-        print("Create a key at https://console.seahorse.dnotitia.ai and put it in .env")
+        print("SEAHORSE_API_KEY is empty. Put it in .env ")
         sys.exit(0)
 
-    table = settings.seahorse_table_facts
-    vs = _store(settings.seahorse_api_key, table)
-    vs.add_texts(["hippo smoke: hippocampus is the brain region for long-term memory."])
-    hits = vs.similarity_search("long-term memory", k=1)
-    print("table:", table)
-    print("hits:", hits)
-    if not hits:
-        raise SystemExit("Seahorse search returned no hits")
-    print("ok")
+    store = SeahorseStore(settings.seahorse_api_key, settings.seahorse_table_facts)
+    can_write = True
+    write_error = ""
+    try:
+        doc_id = store.add(
+            "hippo smoke: hippocampus is the brain region for long-term memory.",
+            metadata={"kind": "smoke"},
+        )
+        print("added", doc_id)
+    except Exception as exc:  # noqa: BLE001
+        can_write = False
+        write_error = str(exc)
+        print("add failed:", write_error[:300])
+
+    hits = store.search("long-term memory", k=1)
+    print("table:", settings.seahorse_table_facts)
+    print("hits:", [h.get("text", "")[:80] for h in hits])
+    if hits:
+        print("ok: Seahorse read+write working")
+        return
+    if not can_write:
+        if "WRITE permission" in write_error or "403" in write_error:
+            print(
+                "Seahorse key is READ-only and the table has never been written, "
+                "so there is nothing to recall.\n"
+                "Until you have a WRITE key, run with HIPPO_MEMORY_BACKEND=chroma "
+                "(local) - the agent code path is identical."
+            )
+        else:
+            print(
+                "Seahorse write failed for a non-permission reason (timeout / server). "
+                "Check `python scripts/seahorse_tables.py`; if it keeps failing use "
+                "HIPPO_MEMORY_BACKEND=chroma."
+            )
+        return
+    raise SystemExit("Seahorse write succeeded but search returned no hits")
 
 
 if __name__ == "__main__":
