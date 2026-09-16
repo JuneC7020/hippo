@@ -21,9 +21,18 @@ class Settings(BaseSettings):
     hippo_token_budget: int = 8000
     hippo_data_dir: Path = Path(".hippo")
     hippo_workspace: Path = Path(".")
+    hippo_mcp_config: Path = Path("mcp.json")
 
 
 def load_settings() -> Settings:
     s = Settings()
     s.hippo_data_dir.mkdir(parents=True, exist_ok=True)
     return s
+
+
+def resolve_mcp_config(configured: Path) -> Path:
+    """cwd first, then the packaged default next to pyproject (works from any workspace/Docker)."""
+    if configured.is_absolute() or configured.exists():
+        return configured
+    packaged = Path(__file__).resolve().parents[2] / configured
+    return packaged if packaged.exists() else configured

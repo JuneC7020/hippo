@@ -13,11 +13,28 @@ from hippo.memory.seahorse import SeahorseStore
 
 SUMMARY_SYSTEM = (
     "You write long-term memory for a coding agent.\n"
-    'Return JSON only: {"episode": "2-3 sentences about what was asked and concluded", '
+    'Return JSON only: {"episode": "2-4 sentences: what was asked, what was concluded, and any '
+    'outcome worth remembering next time (failing tests, errors, files changed, open questions)", '
     '"facts": ["durable repo/user fact", ...]}\n'
-    "facts must still be true next week (paths, stack, conventions). Empty facts is fine.\n"
+    "facts must still be true next week (paths, stack, conventions) and name the repo or "
+    "project they belong to. Empty facts is fine.\n"
+    "Only record what the TASK and ANSWER actually state. Never invent outcomes; if the answer "
+    "does not say whether something worked, leave it out.\n"
     "No markdown."
 )
+
+DEDUPE_JACCARD = 0.8
+
+
+def _norm_tokens(text: str) -> set[str]:
+    return {t for t in "".join(c.lower() if c.isalnum() else " " for c in text).split() if t}
+
+
+def _near_duplicate(a: str, b: str) -> bool:
+    ta, tb = _norm_tokens(a), _norm_tokens(b)
+    if not ta or not tb:
+        return False
+    return len(ta & tb) / len(ta | tb) >= DEDUPE_JACCARD
 
 
 class MemoryManager:
@@ -32,11 +49,18 @@ class MemoryManager:
         return self.episodes.add(summary, metadata=payload)
 
     def remember_fact(self, text: str, **meta: object) -> str:
+        """Add a fact unless a near-identical one exists (returns the existing id then)."""
+        for hit in self.facts.search(text, k=3):
+            if _near_duplicate(text, hit.get("text") or ""):
+                return hit["id"]
         payload = {k: v for k, v in meta.items() if v is not None}
         payload["kind"] = "fact"
         return self.facts.add(text, metadata=payload)
 
     def recall(self, query: str, *, k: int = 5) -> list[dict[str, Any]]:
+        """Top-k across both stores. Episodes get a reserved share (about a third of k)
+        so a pile of short facts cannot crowd out the "what happened last time" story."""
+        k = max(k, 1)
         facts = self.facts.search(query, k=k)
         episodes = self.episodes.search(query, k=k)
         for row in facts:
@@ -45,8 +69,10 @@ class MemoryManager:
         for row in episodes:
             meta = row.setdefault("metadata", {})
             meta["kind"] = meta.get("kind") or "episode"
-        merged = facts + episodes
-        return merged[: max(k, 1)]
+        n_ep = min(len(episodes), max(1, k // 3)) if episodes else 0
+        n_facts = min(len(facts), k - n_ep)
+        n_ep = min(len(episodes), k - n_facts)  # give unused fact slots back to episodes
+        return facts[:n_facts] + episodes[:n_ep]
 
     def format_recall(self, hits: list[dict[str, Any]]) -> str:
         if not hits:

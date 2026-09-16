@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="469" viewBox="0 0 880 469" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+<rect width="100%" height="100%" rx="8" fill="#0d1117"/>
+<text x="16" y="30" fill="#58a6ff" opacity="0">$ cd examples/sandbox &amp;&amp; python -m pytest -q<animate attributeName="opacity" from="0" to="1" begin="0.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="49" fill="#f85149" opacity="0">FAILED tests/test_pricing.py::test_discount_rounds_half_up_to_cent<animate attributeName="opacity" from="0" to="1" begin="0.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="68" fill="#f85149" opacity="0">FAILED tests/test_pricing.py::test_total_with_discount_and_vat<animate attributeName="opacity" from="0" to="1" begin="1.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="87" fill="#f85149" opacity="0">2 failed, 3 passed<animate attributeName="opacity" from="0" to="1" begin="1.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="106" fill="#c9d1d9" opacity="0"><animate attributeName="opacity" from="0" to="1" begin="2.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="125" fill="#58a6ff" opacity="0">$ hippo run -w examples/sandbox --write &quot;The pytest suite has failing tests. Reproduce, find the single<animate attributeName="opacity" from="0" to="1" begin="2.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="144" fill="#58a6ff" opacity="0">    root cause in the library source, fix the source (not the tests), re-run the suite until green.&quot;<animate attributeName="opacity" from="0" to="1" begin="3.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="163" fill="#c9d1d9" opacity="0">plan          s1 reproduce  s2 root cause  s3 fix source  s4 re-run suite<animate attributeName="opacity" from="0" to="1" begin="3.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="182" fill="#f85149" opacity="0">s1  local.run_pytest()                     -&gt; exit 1, 2 failed 3 passed<animate attributeName="opacity" from="0" to="1" begin="4.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="201" fill="#3fb950" opacity="0">s1  APPROVE<animate attributeName="opacity" from="0" to="1" begin="4.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="220" fill="#c9d1d9" opacity="0">s2  filesystem.read_text_file(invoicely/pricing.py)<animate attributeName="opacity" from="0" to="1" begin="5.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="239" fill="#d29922" opacity="0">s2  REVISE  &quot;identified floor division, but show the failing values&quot;<animate attributeName="opacity" from="0" to="1" begin="5.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="258" fill="#3fb950" opacity="0">s2  read pricing.py + tests/test_pricing.py -&gt; APPROVE<animate attributeName="opacity" from="0" to="1" begin="6.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="277" fill="#c9d1d9" opacity="0">s3  filesystem.edit_file(invoicely/pricing.py)<animate attributeName="opacity" from="0" to="1" begin="6.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="296" fill="#f85149" opacity="0">      - discount = amount_cents * discount_percent // 100<animate attributeName="opacity" from="0" to="1" begin="7.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="315" fill="#3fb950" opacity="0">      + discount = round(amount_cents * discount_percent / 100)<animate attributeName="opacity" from="0" to="1" begin="7.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="334" fill="#3fb950" opacity="0">s3  local.run_pytest()                     -&gt; exit 0, 5 passed<animate attributeName="opacity" from="0" to="1" begin="8.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="353" fill="#3fb950" opacity="0">s3  APPROVE  (reviewer read the tool log, not the worker&#x27;s claim)<animate attributeName="opacity" from="0" to="1" begin="8.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="372" fill="#3fb950" opacity="0">s4  local.run_pytest()                     -&gt; exit 0, 5 passed  APPROVE<animate attributeName="opacity" from="0" to="1" begin="9.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="391" fill="#d29922" opacity="0">s1:done(x1) | s2:done(x2) | s3:done(x1) | s4:done(x1)  replans=0<animate attributeName="opacity" from="0" to="1" begin="9.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="410" fill="#c9d1d9" opacity="0">Root cause: floor division in apply_discount() truncated discounts instead of<animate attributeName="opacity" from="0" to="1" begin="10.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="429" fill="#c9d1d9" opacity="0">rounding to the cent. Changed one line in invoicely/pricing.py; all 5 tests pass.<animate attributeName="opacity" from="0" to="1" begin="10.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="448" fill="#c9d1d9" opacity="0">task_id=c92cfb9611c7   (63 s, gpt-4o-mini)<animate attributeName="opacity" from="0" to="1" begin="11.00s" dur="0.15s" fill="freeze"/></text>
+</svg>

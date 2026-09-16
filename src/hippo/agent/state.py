@@ -34,6 +34,7 @@ class Subtask(TypedDict, total=False):
     evidence: str
     confidence: float
     feedback: str  # last reviewer feedback, fed back into the retry
+    tool_log: list[dict[str, str]]  # what the worker actually ran; the reviewer judges on this
 
 
 class Review(TypedDict, total=False):
@@ -65,6 +66,7 @@ class RunContext:
     api_key: str
     token_budget: int = 8000
     llm_factory: Callable[..., Any] | None = None  # tests inject a fake LLM here
+    workspace_tree: str = ""  # shallow file listing shown to workers so they stop guessing paths
     extra: dict[str, Any] = field(default_factory=dict)
 
 

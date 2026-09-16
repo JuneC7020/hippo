@@ -1,0 +1,9 @@
+[project]
+name = "invoicely"
+version = "0.1.0"
+description = "Tiny invoicing library (hippo demo sandbox)"
+requires-python = ">=3.11"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]

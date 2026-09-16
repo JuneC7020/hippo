@@ -34,6 +34,34 @@ JSON_TYPES = {
 }
 
 
+def _py_type(name: str, spec: dict[str, Any]) -> Any:
+    """JSON-schema fragment -> Python/pydantic type, recursing into arrays and objects.
+
+    Flattening `edits: [{oldText, newText}]` to a bare `list` makes OpenAI's function schema
+    lose `items`, and the model then invents keys. Nested models keep the real shape.
+    """
+    typ = spec.get("type", "string")
+    if isinstance(typ, list):  # e.g. ["string", "null"]
+        typ = next((t for t in typ if t != "null"), "string")
+    if typ == "array":
+        items = spec.get("items") if isinstance(spec.get("items"), dict) else {}
+        return list[_py_type(f"{name}_item", items)]
+    if typ == "object" and isinstance(spec.get("properties"), dict):
+        return json_schema_to_model(name, spec)
+    return JSON_TYPES.get(typ, str)
+
+
+def _plain(value: Any) -> Any:
+    """Nested pydantic instances (from `_py_type`) -> JSON-ready dicts/lists for MCP and traces."""
+    if isinstance(value, BaseModel):
+        return value.model_dump(exclude_none=True)
+    if isinstance(value, list):
+        return [_plain(v) for v in value]
+    if isinstance(value, dict):
+        return {k: _plain(v) for k, v in value.items()}
+    return value
+
+
 def json_schema_to_model(name: str, schema: dict[str, Any] | None) -> type[BaseModel]:
     schema = schema or {}
     props: dict[str, Any] = schema.get("properties") or {}
@@ -41,7 +69,7 @@ def json_schema_to_model(name: str, schema: dict[str, Any] | None) -> type[BaseM
     fields: dict[str, Any] = {}
     for key, spec in props.items():
         spec = spec if isinstance(spec, dict) else {}
-        typ = JSON_TYPES.get(spec.get("type", "string"), str)
+        typ = _py_type(f"{name}_{key}", spec)
         desc = spec.get("description") or ""
         if key in required:
             fields[key] = (typ, Field(description=desc))
@@ -134,7 +162,7 @@ class McpHub:
         tracer = self.tracer
 
         async def _call(**kwargs: Any) -> str:
-            payload = {k: v for k, v in kwargs.items() if v is not None}
+            payload = {k: _plain(v) for k, v in kwargs.items() if v is not None}
             registry.check(qualified)
             tracer.emit("tool_call", server=server, tool=original, args=payload)
             try:
@@ -162,23 +190,72 @@ class McpHub:
         self._clients.clear()
 
 
-class _SessionClient:
-    """mcp 1.x adapter: stdio_client + ClientSession behind the 2.x `Client` surface."""
+CONNECT_TIMEOUT_S = 30
+
+
+class _TaskScopedClient:
+    """Run an MCP client's context managers inside one dedicated asyncio task.
+
+    The MCP SDK is anyio-based: its stdio transport opens cancel scopes that must be
+    entered and exited by the same task. Entering them from the agent's main task and
+    closing them later (or after a failed connect) raises "Attempted to exit cancel
+    scope in a different task" and can cancel unrelated awaits in the main task. So
+    the whole lifecycle lives in `_runner`; the main task only sends requests.
+    """
 
     def __init__(self, params: Any) -> None:
-        from contextlib import AsyncExitStack
+        import asyncio
 
         self._params = params
-        self._stack = AsyncExitStack()
         self._session: Any = None
+        self._ready = asyncio.Event()
+        self._stop = asyncio.Event()
+        self._error: BaseException | None = None
+        self._task: asyncio.Task | None = None
 
-    async def start(self) -> _SessionClient:
+    async def _open(self):
+        """Yield an object with list_tools/call_tool, on mcp 1.x or 2.x."""
+        try:
+            from mcp import Client  # mcp >= 2
+        except ImportError:
+            Client = None  # noqa: N806
+        if Client is not None:
+            async with Client(self._params) as client:
+                yield client
+            return
         from mcp import ClientSession
         from mcp.client.stdio import stdio_client
 
-        read, write = await self._stack.enter_async_context(stdio_client(self._params))
-        self._session = await self._stack.enter_async_context(ClientSession(read, write))
-        await self._session.initialize()
+        async with stdio_client(self._params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                yield session
+
+    async def _runner(self) -> None:
+        try:
+            async for session in self._open():
+                self._session = session
+                self._ready.set()
+                await self._stop.wait()
+        except BaseException as exc:  # noqa: BLE001 - includes CancelledError/ExceptionGroup
+            self._error = exc
+        finally:
+            self._session = None
+            self._ready.set()
+
+    async def start(self) -> _TaskScopedClient:
+        import asyncio
+
+        self._task = asyncio.create_task(self._runner())
+        try:
+            await asyncio.wait_for(self._ready.wait(), timeout=CONNECT_TIMEOUT_S)
+        except TimeoutError:
+            await self.aclose()
+            raise RuntimeError(f"MCP server did not initialize within {CONNECT_TIMEOUT_S}s")
+        if self._session is None:
+            err = self._error
+            await self.aclose()
+            raise RuntimeError(f"MCP server failed to start: {_first_error(err)}")
         return self
 
     async def list_tools(self) -> Any:
@@ -188,44 +265,147 @@ class _SessionClient:
         return await self._session.call_tool(name, arguments)
 
     async def aclose(self) -> None:
-        await self._stack.aclose()
+        import asyncio
+
+        self._stop.set()
+        if self._task is not None and not self._task.done():
+            try:
+                await asyncio.wait_for(self._task, timeout=10)
+            except (TimeoutError, asyncio.CancelledError):
+                self._task.cancel()
+            except BaseException:  # noqa: BLE001
+                pass
 
 
-class _ClientV2:
-    """mcp 2.x `Client` with the same close method name."""
-
-    def __init__(self, client: Any) -> None:
-        self._client = client
-
-    async def list_tools(self) -> Any:
-        return await self._client.list_tools()
-
-    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
-        return await self._client.call_tool(name, arguments)
-
-    async def aclose(self) -> None:
-        await self._client.__aexit__(None, None, None)
+def _first_error(exc: BaseException | None) -> str:
+    """Unwrap anyio ExceptionGroups to the first leaf message."""
+    while isinstance(exc, BaseExceptionGroup) and exc.exceptions:
+        exc = exc.exceptions[0]
+    return f"{type(exc).__name__}: {exc}" if exc else "unknown error"
 
 
 async def _connect(params: Any) -> Any:
-    """Open a stdio MCP client on either mcp 1.x or 2.x."""
-    try:
-        from mcp import Client  # mcp >= 2
-    except ImportError:
-        return await _SessionClient(params).start()
-    client = Client(params)
-    await client.__aenter__()
-    return _ClientV2(client)
+    return await _TaskScopedClient(params).start()
+
+
+def _git_root(workspace: Path) -> Path:
+    """Top-level of the git repo containing `workspace`, else `workspace` itself."""
+    for candidate in (workspace, *workspace.parents):
+        if (candidate / ".git").exists():
+            return candidate
+    return workspace
 
 
 def _rewrite_args(args: list[str], workspace: Path) -> list[str]:
+    ws = workspace.resolve()
     out: list[str] = []
     for a in args:
-        if a in {".", "./"}:
-            out.append(str(workspace.resolve()))
+        if a in {".", "./", "${WORKSPACE}"}:
+            out.append(str(ws))
+        elif a == "${GIT_ROOT}":
+            out.append(str(_git_root(ws)))
         else:
             out.append(a)
     return out
+
+
+TREE_SKIP = frozenset(
+    {
+        ".git",
+        ".hippo",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+
+
+def workspace_tree(workspace: Path, *, max_depth: int = 3, max_entries: int = 150) -> str:
+    """Shallow relative file listing given to workers so they don't burn steps guessing paths."""
+    root = workspace.resolve()
+    lines: list[str] = []
+    truncated = False
+
+    def walk(d: Path, depth: int) -> None:
+        nonlocal truncated
+        if truncated:
+            return
+        try:
+            entries = sorted(d.iterdir(), key=lambda p: (p.is_file(), p.name.lower()))
+        except OSError:
+            return
+        for p in entries:
+            if p.name in TREE_SKIP or p.name.startswith(".") and p.is_dir():
+                continue
+            if len(lines) >= max_entries:
+                truncated = True
+                return
+            rel = p.relative_to(root).as_posix()
+            lines.append(rel + ("/" if p.is_dir() else ""))
+            if p.is_dir() and depth < max_depth:
+                walk(p, depth + 1)
+
+    walk(root, 1)
+    if truncated:
+        lines.append(f"... (truncated at {max_entries} entries)")
+    return "\n".join(lines)
+
+
+PYTEST_TIMEOUT_S = 180
+
+
+def run_pytest_tool(workspace: Path, registry: ToolRegistry, tracer: Tracer) -> StructuredTool:
+    """`python -m pytest` inside the workspace. Fixed command, not a shell: safe without --write."""
+    import asyncio
+    import sys
+
+    root = workspace.resolve()
+
+    class PytestArgs(BaseModel):
+        path: str = Field(default="", description="Test file/dir relative to workspace ('' = all)")
+        keyword: str = Field(default="", description="pytest -k expression (optional)")
+
+    async def run_pytest(path: str = "", keyword: str = "") -> str:
+        registry.check("local__run_pytest")
+        tracer.emit(
+            "tool_call", server="local", tool="run_pytest", args={"path": path, "k": keyword}
+        )
+        cmd = [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", "--no-header"]
+        if path:
+            target = (root / path).resolve()
+            target.relative_to(root)
+            cmd.append(str(target))
+        if keyword:
+            cmd += ["-k", keyword]
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                cwd=str(root),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+            out, _ = await asyncio.wait_for(proc.communicate(), timeout=PYTEST_TIMEOUT_S)
+            text = out.decode("utf-8", errors="replace")
+            text = text[-8000:]  # keep the tail: summary + last failure
+            text = f"exit code {proc.returncode}\n{text}"
+        except TimeoutError:
+            proc.kill()
+            text = f"pytest timed out after {PYTEST_TIMEOUT_S}s"
+        tracer.emit("tool_result", server="local", tool="run_pytest", chars=len(text))
+        return text
+
+    return StructuredTool.from_function(
+        coroutine=run_pytest,
+        name="local__run_pytest",
+        description=(
+            "Run the workspace's pytest suite (or a subset) and return exit code plus output tail. "
+            "Use it to reproduce a failure before changing code and to verify after."
+        ),
+        args_schema=PytestArgs,
+    )
 
 
 def local_fs_tools(workspace: Path, registry: ToolRegistry, tracer: Tracer) -> list[StructuredTool]:

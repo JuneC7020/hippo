@@ -1,0 +1,22 @@
+$ cd examples/sandbox && python -m pytest -q
+FAILED tests/test_pricing.py::test_discount_rounds_half_up_to_cent
+FAILED tests/test_pricing.py::test_total_with_discount_and_vat
+2 failed, 3 passed
+
+$ hippo run -w examples/sandbox --write "The pytest suite has failing tests. Reproduce, find the single root cause in the library source, fix the source (not the tests), re-run the suite until green."
+plan          s1 reproduce  s2 root cause  s3 fix source  s4 re-run suite
+s1  local.run_pytest()                     -> exit 1, 2 failed 3 passed
+s1  APPROVE
+s2  filesystem.read_text_file(invoicely/pricing.py)
+s2  REVISE  "identified floor division, but show the failing values"
+s2  read pricing.py + tests/test_pricing.py -> APPROVE
+s3  filesystem.edit_file(invoicely/pricing.py)
+      - discount = amount_cents * discount_percent // 100
+      + discount = round(amount_cents * discount_percent / 100)
+s3  local.run_pytest()                     -> exit 0, 5 passed
+s3  APPROVE  (reviewer read the tool log, not the worker's claim)
+s4  local.run_pytest()                     -> exit 0, 5 passed  APPROVE
+s1:done(x1) | s2:done(x2) | s3:done(x1) | s4:done(x1)  replans=0
+Root cause: floor division in apply_discount() truncated discounts instead of
+rounding to the cent. Changed one line in invoicely/pricing.py; all 5 tests pass.
+task_id=c92cfb9611c7   (63 s, gpt-4o-mini)

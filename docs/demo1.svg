@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="412" viewBox="0 0 880 412" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+<rect width="100%" height="100%" rx="8" fill="#0d1117"/>
+<text x="16" y="30" fill="#58a6ff" opacity="0">$ hippo run -w examples/sandbox &quot;Onboard me to this repository. Read the README and every source module,<animate attributeName="opacity" from="0" to="1" begin="0.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="49" fill="#58a6ff" opacity="0">    run the test suite, then tell me what it does, what each module is for, how to run the tests and<animate attributeName="opacity" from="0" to="1" begin="0.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="68" fill="#58a6ff" opacity="0">    whether they pass, and the money/rounding conventions.&quot;<animate attributeName="opacity" from="0" to="1" begin="1.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="87" fill="#c9d1d9" opacity="0">memory backend=chroma  (empty)<animate attributeName="opacity" from="0" to="1" begin="1.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="106" fill="#d29922" opacity="0">s1:done(x1) | s2:done(x1) | s3:done(x1) | s4:done(x1)  replans=1<animate attributeName="opacity" from="0" to="1" begin="2.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="125" fill="#c9d1d9" opacity="0">The project is a small invoicing library called &#x27;invoicely&#x27; ...<animate attributeName="opacity" from="0" to="1" begin="2.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="144" fill="#c9d1d9" opacity="0">  models.py  : LineItem / Invoice dataclasses<animate attributeName="opacity" from="0" to="1" begin="3.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="163" fill="#c9d1d9" opacity="0">  pricing.py : subtotal, discounts, VAT, total<animate attributeName="opacity" from="0" to="1" begin="3.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="182" fill="#c9d1d9" opacity="0">  render.py  : plain-text invoice rendering<animate attributeName="opacity" from="0" to="1" begin="4.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="201" fill="#c9d1d9" opacity="0">Tests: python -m pytest -q  -&gt; 2 failing out of 5 (discount rounding, total with discount+VAT)<animate attributeName="opacity" from="0" to="1" begin="4.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="220" fill="#c9d1d9" opacity="0">Money is integer cents; discounts round half up to a cent.<animate attributeName="opacity" from="0" to="1" begin="5.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="239" fill="#c9d1d9" opacity="0">task_id=460c7abd06f2<animate attributeName="opacity" from="0" to="1" begin="5.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="258" fill="#c9d1d9" opacity="0"><animate attributeName="opacity" from="0" to="1" begin="6.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="277" fill="#8b949e" opacity="0"># ---- new process, no tools: only what hippo remembers ----<animate attributeName="opacity" from="0" to="1" begin="6.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="296" fill="#58a6ff" opacity="0">$ hippo run --oneshot &quot;In the invoicely repo, which module handles discounts, what unit is money stored<animate attributeName="opacity" from="0" to="1" begin="7.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="315" fill="#58a6ff" opacity="0">    in, how do I run the tests? Were any tests failing last time?&quot;<animate attributeName="opacity" from="0" to="1" begin="7.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="334" fill="#c9d1d9" opacity="0">memory backend=chroma  recalled=5<animate attributeName="opacity" from="0" to="1" begin="8.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="353" fill="#c9d1d9" opacity="0">Discounts live in pricing.py. Money is stored in integer cents.<animate attributeName="opacity" from="0" to="1" begin="8.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="372" fill="#c9d1d9" opacity="0">Run the tests with `python -m pytest -q`.<animate attributeName="opacity" from="0" to="1" begin="9.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="391" fill="#c9d1d9" opacity="0">Last time, 2 tests were failing: discount rounding and total calculations.<animate attributeName="opacity" from="0" to="1" begin="9.50s" dur="0.15s" fill="freeze"/></text>
+</svg>

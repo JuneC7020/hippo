@@ -1,0 +1,17 @@
+$ hippo run -w examples/sandbox "Onboard me to this repository. Read the README and every source module, run the test suite, then tell me what it does, what each module is for, how to run the tests and whether they pass, and the money/rounding conventions."
+memory backend=chroma  (empty)
+s1:done(x1) | s2:done(x1) | s3:done(x1) | s4:done(x1)  replans=1
+The project is a small invoicing library called 'invoicely' ...
+  models.py  : LineItem / Invoice dataclasses
+  pricing.py : subtotal, discounts, VAT, total
+  render.py  : plain-text invoice rendering
+Tests: python -m pytest -q  -> 2 failing out of 5 (discount rounding, total with discount+VAT)
+Money is integer cents; discounts round half up to a cent.
+task_id=460c7abd06f2
+
+# ---- new process, no tools: only what hippo remembers ----
+$ hippo run --oneshot "In the invoicely repo, which module handles discounts, what unit is money stored in, how do I run the tests? Were any tests failing last time?"
+memory backend=chroma  recalled=5
+Discounts live in pricing.py. Money is stored in integer cents.
+Run the tests with `python -m pytest -q`.
+Last time, 2 tests were failing: discount rounding and total calculations.

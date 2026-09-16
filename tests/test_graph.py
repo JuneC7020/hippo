@@ -222,6 +222,111 @@ def test_worker_tool_call_then_answer(tmp_path: Path) -> None:
     assert "plan" in kinds and "worker_start" in kinds and "review" in kinds
 
 
+def test_repeated_identical_tool_call_gets_nudged(tmp_path: Path) -> None:
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "local__echo", "args": {"text": "same"}, "id": "c1", "type": "tool_call"}
+        ],
+    )
+    call2 = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "local__echo", "args": {"text": "same"}, "id": "c2", "type": "tool_call"}
+        ],
+    )
+    llm = FakeLLM({"worker": [call, call2, _worker("done")]})
+    messages = [SystemMessage(content="You are the worker of hippo"), HumanMessage(content="go")]
+    tracer = Tracer(tmp_path / "t.jsonl")
+    text, reason = asyncio.run(
+        g.tool_loop(llm, _tools(), messages, tracer=tracer, max_steps=4, label="x")
+    )
+    assert reason == "answer"
+    tool_msgs = [m.content for m in messages if m.__class__.__name__ == "ToolMessage"]
+    assert len(tool_msgs) == 2
+    assert "[hippo]" not in tool_msgs[0] and "[hippo]" in tool_msgs[1]
+    assert any(r["kind"] == "repeat_call" for r in tracer.read())
+
+
+def test_reviewer_sees_worker_tool_log(tmp_path: Path) -> None:
+    """The reviewer prompt must carry what the worker actually ran, not just its prose."""
+    call = AIMessage(
+        content="",
+        tool_calls=[
+            {"name": "local__echo", "args": {"text": "proof"}, "id": "c1", "type": "tool_call"}
+        ],
+    )
+    prompts: list[str] = []
+
+    class SpyLLM(FakeLLM):
+        def _reply(self, messages):
+            if self._role(messages) == "reviewer":
+                prompts.append(messages[-1].content)
+            return super()._reply(messages)
+
+    llm = SpyLLM(
+        {
+            "planner": [_plan("use the tool")],
+            "worker": [call, _worker("echo:proof")],
+            "reviewer": [_review("approve")],
+        }
+    )
+    out = _run(tmp_path, llm)
+    assert out["status"] == "done"
+    assert prompts and "local__echo" in prompts[0] and "echo:proof" in prompts[0]
+    assert out["plan"][0]["tool_log"][0]["tool"] == "local__echo"
+
+
+def test_worker_always_gets_baseline_read_tools(tmp_path: Path) -> None:
+    """Planner grants only the edit tool; worker must still be able to read and run tests."""
+
+    async def noop(**_):
+        return "ok"
+
+    class Empty(BaseModel):
+        pass
+
+    def mk(name: str) -> StructuredTool:
+        return StructuredTool.from_function(
+            coroutine=noop, name=name, description=name, args_schema=Empty
+        )
+
+    seen: dict[str, list[str]] = {}
+
+    class SpyLLM(FakeLLM):
+        def bind_tools(self, tools):
+            seen["names"] = sorted(t.name for t in tools)
+            return self
+
+    llm = SpyLLM({"worker": [_worker("edited")]})
+    ctx = RunContext(
+        tools=[mk("filesystem__edit_file"), mk("filesystem__read_file"), mk("local__run_pytest")],
+        tracer=Tracer(tmp_path / "trace.jsonl"),
+        model="fake",
+        api_key="x",
+        token_budget=100_000,
+        llm_factory=lambda **_: llm,
+    )
+    state = g.initial_state("fix it")
+    state["plan"] = [
+        {
+            "id": "s1",
+            "goal": "edit",
+            "allowed_tools": ["filesystem__edit_file"],
+            "budget_steps": 3,
+            "status": "pending",
+            "attempts": 0,
+        }
+    ]
+    state["current"] = 0
+
+    class RT:
+        context = ctx
+
+    asyncio.run(g.worker_node(state, RT()))
+    assert seen["names"] == ["filesystem__edit_file", "filesystem__read_file", "local__run_pytest"]
+
+
 def test_checkpoint_resume_continues_after_interrupt(tmp_path: Path) -> None:
     """Crash inside the worker, then resume from the planner checkpoint."""
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver

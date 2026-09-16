@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import uuid
 from dataclasses import dataclass
 from pathlib import Path
@@ -46,13 +47,16 @@ def run(
     oneshot: bool = typer.Option(False, "--oneshot", help="Skip tools (M0 behaviour)"),
     single: bool = typer.Option(False, "--single", help="One agent, no planner/reviewer (M1)"),
     no_memory: bool = typer.Option(False, "--no-memory", help="Skip recall and persist"),
+    workspace: Path | None = typer.Option(
+        None, "--workspace", "-w", help="Repository to work in (default HIPPO_WORKSPACE or .)"
+    ),
 ) -> None:
     """Run a task: recall memory -> plan -> work -> review -> answer -> store an episode."""
     settings = load_settings()
     _require_key(settings)
     opts = RunOptions(
         model=settings.hippo_demo_model if demo else settings.hippo_model,
-        workspace=Path(settings.hippo_workspace).resolve(),
+        workspace=Path(workspace or settings.hippo_workspace).resolve(),
         data_dir=Path(settings.hippo_data_dir),
         task_id=uuid.uuid4().hex[:12],
         no_mcp=no_mcp,
@@ -71,6 +75,7 @@ def resume(
     no_mcp: bool = typer.Option(False, "--no-mcp"),
     write: bool = typer.Option(False, "--write"),
     no_memory: bool = typer.Option(False, "--no-memory"),
+    workspace: Path | None = typer.Option(None, "--workspace", "-w"),
 ) -> None:
     """Continue an interrupted or failed task from its last LangGraph checkpoint."""
     from hippo.store.sqlite import connect, get_task
@@ -87,7 +92,7 @@ def resume(
         raise typer.Exit(0)
     opts = RunOptions(
         model=settings.hippo_demo_model if demo else settings.hippo_model,
-        workspace=Path(settings.hippo_workspace).resolve(),
+        workspace=Path(workspace or settings.hippo_workspace).resolve(),
         data_dir=data_dir,
         task_id=task_id,
         no_mcp=no_mcp,
@@ -118,8 +123,9 @@ def _recall(settings: Settings, task: str, tracer: Tracer) -> tuple[Any, list[st
 
 async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume: bool) -> None:
     from hippo.agent.graph import run_once
+    from hippo.config import resolve_mcp_config
     from hippo.store.sqlite import connect, upsert_task
-    from hippo.tools.mcp_client import McpHub, local_fs_tools
+    from hippo.tools.mcp_client import McpHub, local_fs_tools, run_pytest_tool
     from hippo.tools.registry import ToolRegistry
 
     api_key = settings.openai_api_key
@@ -138,12 +144,14 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
                 task, model=opts.model, api_key=api_key, tracer=tracer, recalled=recalled
             )
         else:
-            tools = [] if opts.no_mcp else await hub.start(Path("mcp.json"), opts.workspace)
+            mcp_cfg = resolve_mcp_config(Path(settings.hippo_mcp_config))
+            tools = [] if opts.no_mcp else await hub.start(mcp_cfg, opts.workspace)
             if not tools:
                 console.print(
                     "[yellow]MCP unavailable or --no-mcp: using local filesystem tools[/yellow]"
                 )
                 tools = local_fs_tools(opts.workspace, hub.registry, tracer)
+            tools.append(run_pytest_tool(opts.workspace, hub.registry, tracer))
             if opts.single:
                 text = await _run_single(task, tools, tracer, opts, api_key, recalled, settings)
             else:
@@ -168,7 +176,9 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
     finally:
         await hub.aclose()
 
-    if mem is not None:
+    # Only grounded runs (ones that could look at the repo) write memory. A --oneshot answer
+    # is recall + the model's guess; storing it would feed hearsay back into recall.
+    if mem is not None and not opts.oneshot:
         try:
             saved = mem.persist_run(
                 task=task, answer=text, task_id=opts.task_id, model=opts.model, api_key=api_key
@@ -205,6 +215,7 @@ async def _run_graph(
 
     from hippo.agent.graph import build_graph, initial_state
     from hippo.agent.state import RunContext
+    from hippo.tools.mcp_client import workspace_tree
 
     ctx = RunContext(
         tools=tools,
@@ -212,6 +223,7 @@ async def _run_graph(
         model=opts.model,
         api_key=api_key,
         token_budget=settings.hippo_token_budget,
+        workspace_tree=workspace_tree(opts.workspace),
     )
     config = {"configurable": {"thread_id": opts.task_id}}
     async with AsyncSqliteSaver.from_conn_string(str(opts.data_dir / "checkpoints.db")) as saver:
@@ -286,8 +298,9 @@ def memory(
 @app.command()
 def trace(
     task_id: str | None = typer.Argument(None),
+    raw: bool = typer.Option(False, "--raw", help="Full JSON per event instead of one line each"),
 ) -> None:
-    """Print JSONL traces for a run."""
+    """Show what a run did: plan, tool calls, reviews (one line per event; --raw for JSON)."""
     settings = load_settings()
     ids = list_trace_ids(Path(settings.hippo_data_dir))
     if not task_id:
@@ -303,7 +316,46 @@ def trace(
         console.print(f"no trace: {task_id}")
         raise typer.Exit(1)
     for row in rows:
-        console.print(JSON.from_data(row))
+        if raw:
+            console.print(JSON.from_data(row))
+        else:
+            console.print(format_trace_line(row), markup=False, highlight=False)
+
+
+def format_trace_line(row: dict) -> str:
+    """Compact one-line rendering of a trace event (timestamps dropped)."""
+    kind = row.get("kind", "?")
+    ts = (row.get("ts") or "")[11:19]
+    body: str
+    if kind == "plan":
+        subs = row.get("subtasks") or []
+        body = ("re-plan" if row.get("replan") else "plan") + f" {len(subs)} subtask(s)"
+        for s in subs:
+            body += f"\n{'':>10}{s['id']}: {s['goal'][:90]}  tools={s.get('tools') or 'all'}"
+    elif kind == "tool_call":
+        args = json.dumps(row.get("args") or {}, ensure_ascii=False)
+        body = f"{row.get('server')}.{row.get('tool')}({args[:110]})"
+    elif kind == "tool_result":
+        body = f"{'':>4}-> {row.get('tool')} {row.get('chars')} chars"
+    elif kind == "worker_start":
+        body = f"{row.get('subtask')} attempt {row.get('attempt')} (tools={row.get('n_tools')})"
+    elif kind == "worker_end":
+        body = f"{row.get('subtask')} {row.get('reason')} confidence={row.get('confidence')}"
+    elif kind == "review":
+        body = f"{row.get('subtask')} {row.get('verdict').upper()}: {row.get('feedback', '')[:110]}"
+    elif kind == "llm":
+        calls = row.get("tool_calls") or []
+        body = f"{row.get('label')} step {row.get('step')}: " + (
+            ", ".join(calls) if calls else f"answer ({row.get('chars')} chars)"
+        )
+    elif kind == "mcp":
+        body = f"{row.get('event')} {row.get('server')}" + (
+            f" ({row.get('tools')} tools)" if row.get("tools") is not None else ""
+        )
+    else:
+        rest = {k: v for k, v in row.items() if k not in {"ts", "kind"}}
+        body = json.dumps(rest, ensure_ascii=False)[:140]
+    return f"{ts} {kind:<12} {body}"
 
 
 if __name__ == "__main__":

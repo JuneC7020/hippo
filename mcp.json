@@ -6,7 +6,7 @@
     },
     "git": {
       "command": "python",
-      "args": ["-m", "mcp_server_git", "--repository", "."]
+      "args": ["-m", "mcp_server_git", "--repository", "${GIT_ROOT}"]
     },
     "seahorse": {
       "command": "python",

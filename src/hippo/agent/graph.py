@@ -41,7 +41,56 @@ from hippo.agent.state import (
 from hippo.trace import Tracer
 
 MAX_TOOL_STEPS = 12
-MIN_SUBTASK_STEPS = 4  # planners under-estimate; a real subtask needs list -> read -> answer
+MIN_SUBTASK_STEPS = 6  # planners under-estimate; an edit needs read -> edit -> test -> answer
+
+REPEAT_NUDGE = (
+    "\n\n[hippo] You already made this exact call and got this exact result. Repeating it will "
+    "not help. Read the message above, then change something: list the directory or read the "
+    "file to get real paths and exact text, fix the argument names, or try another tool."
+)
+
+# Every worker gets these regardless of the planner's pick: reading the repo and running its
+# tests are never the privilege the planner is deciding about. Writes/commits still must be
+# granted per subtask (and by --write).
+BASELINE_TOOLS = frozenset(
+    {
+        "read_file",
+        "read_text_file",
+        "read_multiple_files",
+        "list_directory",
+        "directory_tree",
+        "search_files",
+        "get_file_info",
+        "list_dir",
+        "run_pytest",
+        "git_status",
+        "git_diff",
+        "git_diff_unstaged",
+    }
+)
+
+
+def _short(name: str) -> str:
+    return name.split("__")[-1]
+
+
+def _log_tail(result: str, head: int = 160, tail: int = 240) -> str:
+    """Keep the start (what) and the end (pytest summary / error line) of a tool result."""
+    flat = result.replace(REPEAT_NUDGE, " [repeated call]")
+    if len(flat) <= head + tail:
+        return flat
+    return flat[:head] + " ... " + flat[-tail:]
+
+
+def _format_tool_log(log: list[dict[str, str]] | None) -> str:
+    if not log:
+        return "(no tool calls)"
+    lines = []
+    for i, row in enumerate(log, 1):
+        lines.append(f"{i}. {row['tool']}({row['args']})\n   -> {row['result']}")
+    return "\n".join(lines)
+
+
 MAX_SUBTASKS = 4
 
 
@@ -156,15 +205,18 @@ async def tool_loop(
     summarize: Callable[[str], str] | None = None,
     model: str = "gpt-4o-mini",
     label: str = "run",
+    tool_log: list[dict[str, str]] | None = None,
 ) -> tuple[str, str]:
     """Shared LLM/tool loop. Returns (final_text, stop_reason).
 
     `max_steps` counts tool-calling rounds. When they are used up the model gets
     one last turn *without* tools, so a tight budget yields a partial answer
     instead of nothing (stop_reason "budget_answer").
+    If `tool_log` is given, every call is appended as {tool, args, result} (truncated).
     """
     bound = llm.bind_tools(tools) if tools else llm
     by_name = {t.name: t for t in tools}
+    seen_calls: dict[str, str] = {}  # "name:args" -> result, to catch verbatim retries
 
     for step in range(max_steps + 1):
         last_turn = step == max_steps
@@ -209,7 +261,18 @@ async def tool_loop(
                     result = await tool.ainvoke(args)
                 except Exception as exc:  # noqa: BLE001
                     result = f"tool error: {exc}"
-            messages.append(ToolMessage(content=str(result)[:12_000], tool_call_id=call_id))
+            result = str(result)[:12_000]
+            args_json = json.dumps(args, sort_keys=True, default=str, ensure_ascii=False)
+            key = f"{name}:{args_json}"
+            if seen_calls.get(key) == result:
+                result += REPEAT_NUDGE
+                tracer.emit("repeat_call", label=label, step=step, tool=name)
+            seen_calls[key] = result
+            if tool_log is not None:
+                tool_log.append(
+                    {"tool": name, "args": args_json[:300], "result": _log_tail(result)}
+                )
+            messages.append(ToolMessage(content=result, tool_call_id=call_id))
 
     return "Stopped after the tool-call budget.", "max_steps"  # unreachable in practice
 
@@ -353,19 +416,29 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
     idx = int(state.get("current") or 0)
     sub = plan[idx]
     allowed = set(sub.get("allowed_tools") or [])
-    tools = [t for t in ctx.tools if not allowed or t.name in allowed] or list(ctx.tools)
+    if allowed:
+        tools = [t for t in ctx.tools if t.name in allowed or _short(t.name) in BASELINE_TOOLS]
+    else:
+        tools = list(ctx.tools)
     llm = _make_llm(ctx)
 
-    prior = [
-        f"- {s['id']} ({s['goal'][:120]}): {s.get('result', '')[:400]}"
-        for s in plan[:idx]
-        if s.get("status") == "done"
-    ]
+    prior = []
+    for s in plan[:idx]:
+        if s.get("status") != "done":
+            continue
+        line = f"- {s['id']} ({s['goal'][:120]}): {s.get('result', '')[:500]}"
+        if s.get("evidence"):
+            line += f"\n  evidence: {s['evidence'][:400]}"
+        prior.append(line)
     system = _with_memory(WORKER_SYSTEM, state.get("recalled"))
     user = (
         f"OVERALL TASK (for context only):\n{state['task']}\n\n"
         f"YOUR SUBTASK ({sub['id']}):\n{sub['goal']}"
     )
+    if ctx.workspace_tree:
+        user += (
+            f"\n\nWORKSPACE FILES (relative paths; use these, do not guess):\n{ctx.workspace_tree}"
+        )
     if prior:
         user += "\n\nRESULTS OF EARLIER SUBTASKS:\n" + "\n".join(prior)
     if sub.get("feedback"):
@@ -378,6 +451,7 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
         attempt=int(sub.get("attempts") or 0) + 1,
         n_tools=len(tools),
     )
+    tool_log: list[dict[str, str]] = []
     text, reason = await tool_loop(
         llm,
         tools,
@@ -388,16 +462,18 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
         summarize=_summarizer(llm),
         model=ctx.model,
         label=sub["id"],
+        tool_log=tool_log,
     )
     result, evidence, confidence = _parse_worker_output(text)
     if reason != "answer":
-        evidence = (evidence + " | answered at tool budget, partly unverified").strip(" |")
-        confidence = min(confidence, 0.5)
+        evidence = (evidence + " | answered at tool budget").strip(" |")
+        confidence = min(confidence, 0.6)
     sub.update(
         attempts=int(sub.get("attempts") or 0) + 1,
         result=result,
         evidence=evidence,
         confidence=confidence,
+        tool_log=tool_log[-10:],
     )
     plan[idx] = sub
     ctx.tracer.emit(
@@ -417,7 +493,9 @@ async def reviewer_node(state: AgentState, runtime: Runtime[RunContext]) -> dict
 
     user = (
         f"SUBTASK GOAL:\n{sub['goal']}\n\nWORKER RESULT:\n{sub.get('result', '')}\n\n"
-        f"WORKER EVIDENCE:\n{sub.get('evidence', '') or '(none given)'}\n\n"
+        f"WORKER EVIDENCE (self-reported):\n{sub.get('evidence', '') or '(none given)'}\n\n"
+        f"TOOL LOG (ground truth - what the worker actually ran and saw):\n"
+        f"{_format_tool_log(sub.get('tool_log'))}\n\n"
         f"WORKER CONFIDENCE: {sub.get('confidence', 0.5)}\n"
         f"ATTEMPT: {sub.get('attempts', 1)} of {MAX_WORKER_ATTEMPTS}"
     )
