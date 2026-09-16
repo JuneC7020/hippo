@@ -1,4 +1,4 @@
-"""SQLite task metadata. LangGraph SqliteSaver lands in M3."""
+"""SQLite task metadata (hippo.db). LangGraph checkpoints live next to it in checkpoints.db."""
 
 from __future__ import annotations
 
@@ -44,6 +44,13 @@ def upsert_task(conn: sqlite3.Connection, task_id: str, goal: str, status: str) 
         (task_id, goal, status, ts, ts),
     )
     conn.commit()
+
+
+def get_task(conn: sqlite3.Connection, task_id: str) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT id, goal, status, created_at, updated_at FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    return dict(row) if row else None
 
 
 def list_tasks(conn: sqlite3.Connection, limit: int = 20) -> list[dict[str, Any]]:

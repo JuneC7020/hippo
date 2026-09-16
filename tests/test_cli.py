@@ -28,7 +28,7 @@ def test_run_failure_marks_task_failed(monkeypatch, tmp_path: Path) -> None:
         raise RuntimeError("credit_balance_exhausted")
 
     monkeypatch.setattr(graph, "run_agent", boom)
-    result = runner.invoke(app, ["run", "--no-mcp", "hello"])
+    result = runner.invoke(app, ["run", "--no-mcp", "--single", "hello"])
     assert result.exit_code == 1
     assert "run failed" in result.output
     assert "credit_balance_exhausted" in result.output

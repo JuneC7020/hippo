@@ -91,7 +91,6 @@ class McpHub:
             return []
         data = json.loads(config_path.read_text(encoding="utf-8"))
         servers: dict[str, Any] = data.get("mcpServers") or {}
-        from mcp import Client
         from mcp.client.stdio import StdioServerParameters
 
         for name, spec in servers.items():
@@ -107,8 +106,7 @@ class McpHub:
             args = _rewrite_args(args, workspace)
             params = StdioServerParameters(command=command, args=args, cwd=str(workspace))
             try:
-                client = Client(params)
-                await client.__aenter__()
+                client = await _connect(params)
             except Exception as exc:  # noqa: BLE001
                 self.tracer.emit("mcp", event="connect_failed", server=name, error=str(exc))
                 continue
@@ -158,10 +156,66 @@ class McpHub:
     async def aclose(self) -> None:
         for client in reversed(self._clients):
             try:
-                await client.__aexit__(None, None, None)
+                await client.aclose()
             except Exception:  # noqa: BLE001
                 pass
         self._clients.clear()
+
+
+class _SessionClient:
+    """mcp 1.x adapter: stdio_client + ClientSession behind the 2.x `Client` surface."""
+
+    def __init__(self, params: Any) -> None:
+        from contextlib import AsyncExitStack
+
+        self._params = params
+        self._stack = AsyncExitStack()
+        self._session: Any = None
+
+    async def start(self) -> _SessionClient:
+        from mcp import ClientSession
+        from mcp.client.stdio import stdio_client
+
+        read, write = await self._stack.enter_async_context(stdio_client(self._params))
+        self._session = await self._stack.enter_async_context(ClientSession(read, write))
+        await self._session.initialize()
+        return self
+
+    async def list_tools(self) -> Any:
+        return await self._session.list_tools()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self._session.call_tool(name, arguments)
+
+    async def aclose(self) -> None:
+        await self._stack.aclose()
+
+
+class _ClientV2:
+    """mcp 2.x `Client` with the same close method name."""
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+
+    async def list_tools(self) -> Any:
+        return await self._client.list_tools()
+
+    async def call_tool(self, name: str, arguments: dict[str, Any]) -> Any:
+        return await self._client.call_tool(name, arguments)
+
+    async def aclose(self) -> None:
+        await self._client.__aexit__(None, None, None)
+
+
+async def _connect(params: Any) -> Any:
+    """Open a stdio MCP client on either mcp 1.x or 2.x."""
+    try:
+        from mcp import Client  # mcp >= 2
+    except ImportError:
+        return await _SessionClient(params).start()
+    client = Client(params)
+    await client.__aenter__()
+    return _ClientV2(client)
 
 
 def _rewrite_args(args: list[str], workspace: Path) -> list[str]:

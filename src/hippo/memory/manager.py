@@ -1,4 +1,4 @@
-"""Episodic/semantic write, recall injection. Compression is M3."""
+"""Episodic/semantic write, recall injection. In-run compression lives in agent/context.py."""
 
 from __future__ import annotations
 
@@ -88,9 +88,6 @@ class MemoryManager:
             if isinstance(fact, str) and fact.strip():
                 fact_ids.append(self.remember_fact(fact.strip(), task_id=task_id))
         return {"episode": episode, "facts": fact_ids}
-
-    def compress(self, messages: list[dict], token_budget: int) -> tuple[str, list[dict]]:
-        raise NotImplementedError("context compression lands in M3")
 
 
 def _parse_summary(text: str) -> dict[str, Any]:

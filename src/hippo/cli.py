@@ -2,18 +2,39 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import typer
 from rich.console import Console
 from rich.json import JSON
 from rich.table import Table
 
-from hippo.config import load_settings
+from hippo.config import Settings, load_settings
 from hippo.trace import Tracer, list_trace_ids
 
 app = typer.Typer(help="hippo: long-term memory CLI agent")
 console = Console()
+
+
+def _require_key(settings: Settings) -> None:
+    if not settings.openai_api_key:
+        console.print("[red]OPENAI_API_KEY is empty. Copy .env.example to .env and set it.[/red]")
+        raise typer.Exit(1)
+
+
+@dataclass
+class RunOptions:
+    model: str
+    workspace: Path
+    data_dir: Path
+    task_id: str
+    no_mcp: bool = False
+    write: bool = False
+    oneshot: bool = False
+    single: bool = False
+    no_memory: bool = False
 
 
 @app.command()
@@ -23,131 +44,202 @@ def run(
     no_mcp: bool = typer.Option(False, "--no-mcp", help="Use local filesystem tools only"),
     write: bool = typer.Option(False, "--write", help="Allow write/delete/commit tools"),
     oneshot: bool = typer.Option(False, "--oneshot", help="Skip tools (M0 behaviour)"),
+    single: bool = typer.Option(False, "--single", help="One agent, no planner/reviewer (M1)"),
     no_memory: bool = typer.Option(False, "--no-memory", help="Skip recall and persist"),
 ) -> None:
-    """Run a task. Recalls prior memory, uses tools, then stores an episode summary."""
+    """Run a task: recall memory -> plan -> work -> review -> answer -> store an episode."""
     settings = load_settings()
-    if not settings.openai_api_key:
-        console.print("[red]OPENAI_API_KEY is empty. Copy .env.example to .env and set it.[/red]")
-        raise typer.Exit(1)
-    model = settings.hippo_demo_model if demo else settings.hippo_model
-    task_id = uuid.uuid4().hex[:12]
-    asyncio.run(
-        _run_async(
-            task,
-            model=model,
-            api_key=settings.openai_api_key,
-            workspace=Path(settings.hippo_workspace).resolve(),
-            data_dir=Path(settings.hippo_data_dir),
-            task_id=task_id,
-            no_mcp=no_mcp,
-            write=write,
-            oneshot=oneshot,
-            no_memory=no_memory,
-        )
+    _require_key(settings)
+    opts = RunOptions(
+        model=settings.hippo_demo_model if demo else settings.hippo_model,
+        workspace=Path(settings.hippo_workspace).resolve(),
+        data_dir=Path(settings.hippo_data_dir),
+        task_id=uuid.uuid4().hex[:12],
+        no_mcp=no_mcp,
+        write=write,
+        oneshot=oneshot,
+        single=single,
+        no_memory=no_memory,
     )
+    asyncio.run(_run_async(task, settings, opts, resume=False))
 
 
-async def _run_async(
-    task: str,
-    *,
-    model: str,
-    api_key: str,
-    workspace: Path,
-    data_dir: Path,
-    task_id: str,
-    no_mcp: bool,
-    write: bool,
-    oneshot: bool,
-    no_memory: bool,
+@app.command()
+def resume(
+    task_id: str = typer.Argument(..., help="Task id from `hippo tasks`"),
+    demo: bool = typer.Option(False, "--demo"),
+    no_mcp: bool = typer.Option(False, "--no-mcp"),
+    write: bool = typer.Option(False, "--write"),
+    no_memory: bool = typer.Option(False, "--no-memory"),
 ) -> None:
-    from hippo.agent.graph import run_agent, run_once
+    """Continue an interrupted or failed task from its last LangGraph checkpoint."""
+    from hippo.store.sqlite import connect, get_task
+
+    settings = load_settings()
+    _require_key(settings)
+    data_dir = Path(settings.hippo_data_dir)
+    row = get_task(connect(data_dir / "hippo.db"), task_id)
+    if row is None:
+        console.print(f"[red]unknown task_id {task_id}[/red]  (see `hippo tasks`)")
+        raise typer.Exit(1)
+    if row["status"] == "done":
+        console.print(f"[yellow]task {task_id} already finished[/yellow]")
+        raise typer.Exit(0)
+    opts = RunOptions(
+        model=settings.hippo_demo_model if demo else settings.hippo_model,
+        workspace=Path(settings.hippo_workspace).resolve(),
+        data_dir=data_dir,
+        task_id=task_id,
+        no_mcp=no_mcp,
+        write=write,
+        no_memory=no_memory,
+    )
+    asyncio.run(_run_async(row["goal"], settings, opts, resume=True))
+
+
+def _recall(settings: Settings, task: str, tracer: Tracer) -> tuple[Any, list[str]]:
     from hippo.memory.manager import build_memory_manager
+
+    try:
+        mem = build_memory_manager(settings)
+        hits = mem.recall(task, k=5)
+        block = mem.format_recall(hits)
+        tracer.emit("recall", backend=mem.backend, n=len(hits))
+        if block:
+            console.print(f"[dim]memory backend={mem.backend}  recalled={len(hits)}[/dim]")
+            return mem, [block]
+        console.print(f"[dim]memory backend={mem.backend}  (empty)[/dim]")
+        return mem, []
+    except Exception as exc:  # noqa: BLE001
+        console.print(f"[yellow]memory recall skipped: {exc}[/yellow]")
+        tracer.emit("recall_error", error=str(exc))
+        return None, []
+
+
+async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume: bool) -> None:
+    from hippo.agent.graph import run_once
     from hippo.store.sqlite import connect, upsert_task
     from hippo.tools.mcp_client import McpHub, local_fs_tools
     from hippo.tools.registry import ToolRegistry
 
-    settings = load_settings()
-    tracer = Tracer(data_dir / "traces" / f"{task_id}.jsonl")
-    tracer.emit("meta", task_id=task_id, workspace=str(workspace))
-    registry = ToolRegistry(max_calls=40, allow_dangerous=write)
-    db = connect(data_dir / "hippo.db")
-    upsert_task(db, task_id, task, "running")
+    api_key = settings.openai_api_key
+    tracer = Tracer(opts.data_dir / "traces" / f"{opts.task_id}.jsonl")
+    tracer.emit("meta", task_id=opts.task_id, workspace=str(opts.workspace), resume=resume)
+    db = connect(opts.data_dir / "hippo.db")
+    upsert_task(db, opts.task_id, task, "running")
 
-    recalled_block: list[str] = []
-    mem = None
-    if not no_memory:
-        try:
-            mem = build_memory_manager(settings)
-            hits = mem.recall(task, k=5)
-            block = mem.format_recall(hits)
-            if block:
-                recalled_block = [block]
-                console.print(f"[dim]memory backend={mem.backend}  recalled={len(hits)}[/dim]")
-            else:
-                console.print(f"[dim]memory backend={mem.backend}  (empty)[/dim]")
-            tracer.emit("recall", backend=mem.backend, n=len(hits))
-        except Exception as exc:  # noqa: BLE001
-            console.print(f"[yellow]memory recall skipped: {exc}[/yellow]")
-            tracer.emit("recall_error", error=str(exc))
-            mem = None
+    mem, recalled = (None, []) if opts.no_memory else _recall(settings, task, tracer)
 
+    hub = McpHub(ToolRegistry(max_calls=60, allow_dangerous=opts.write), tracer)
+    final_status = "done"
     try:
-        if oneshot:
+        if opts.oneshot:
             text = run_once(
-                task, model=model, api_key=api_key, tracer=tracer, recalled=recalled_block
+                task, model=opts.model, api_key=api_key, tracer=tracer, recalled=recalled
             )
         else:
-            hub = McpHub(registry, tracer)
-            tools = []
-            if not no_mcp:
-                tools = await hub.start(Path("mcp.json"), workspace)
+            tools = [] if opts.no_mcp else await hub.start(Path("mcp.json"), opts.workspace)
             if not tools:
                 console.print(
                     "[yellow]MCP unavailable or --no-mcp: using local filesystem tools[/yellow]"
                 )
-                tools = local_fs_tools(workspace, registry, tracer)
-            try:
-                text = await run_agent(
-                    task,
-                    model=model,
-                    api_key=api_key,
-                    tools=tools,
-                    tracer=tracer,
-                    recalled=recalled_block,
+                tools = local_fs_tools(opts.workspace, hub.registry, tracer)
+            if opts.single:
+                text = await _run_single(task, tools, tracer, opts, api_key, recalled, settings)
+            else:
+                text, final_status = await _run_graph(
+                    task, tools, tracer, opts, api_key, recalled, settings, resume
                 )
-            finally:
-                await hub.aclose()
+    except KeyboardInterrupt:
+        upsert_task(db, opts.task_id, task, "interrupted")
+        tracer.emit("run_interrupted")
+        console.print(
+            f"\n[yellow]interrupted.[/yellow] continue later with: hippo resume {opts.task_id}"
+        )
+        raise typer.Exit(130) from None
     except Exception as exc:  # noqa: BLE001
-        upsert_task(db, task_id, task, "failed")
+        upsert_task(db, opts.task_id, task, "failed")
         tracer.emit("run_error", error=str(exc)[:1000])
         console.print(f"[red]run failed:[/red] {exc}")
-        console.print(f"[dim]task_id={task_id}  |  hippo trace {task_id}[/dim]")
+        console.print(f"[dim]task_id={opts.task_id}  |  hippo trace {opts.task_id}[/dim]")
+        if not opts.oneshot and not opts.single:
+            console.print(f"[dim]retry from the last checkpoint: hippo resume {opts.task_id}[/dim]")
         raise typer.Exit(1) from exc
+    finally:
+        await hub.aclose()
 
     if mem is not None:
         try:
             saved = mem.persist_run(
-                task=task, answer=text, task_id=task_id, model=model, api_key=api_key
+                task=task, answer=text, task_id=opts.task_id, model=opts.model, api_key=api_key
             )
             tracer.emit("memory_write", facts=len(saved.get("facts") or []))
         except Exception as exc:  # noqa: BLE001
-            console.print(
-                "[yellow]memory write failed "
-                f"(search still works if the key is read-only): {exc}[/yellow]"
-            )
+            console.print(f"[yellow]memory write failed: {exc}[/yellow]")
             tracer.emit("memory_write_error", error=str(exc))
 
-    upsert_task(db, task_id, task, "done")
-    console.print(text)
-    console.print(f"[dim]task_id={task_id}  |  hippo trace {task_id}[/dim]")
+    upsert_task(db, opts.task_id, task, final_status)
+    console.print(text, markup=False)
+    console.print(f"[dim]task_id={opts.task_id}  |  hippo trace {opts.task_id}[/dim]")
 
 
-@app.command()
-def resume(task_id: str = typer.Argument(...)) -> None:
-    """Resume a checkpointed task (M3)."""
-    console.print(f"[yellow]resume not implemented yet[/yellow] (task_id={task_id})")
-    raise typer.Exit(2)
+async def _run_single(task, tools, tracer, opts, api_key, recalled, settings) -> str:
+    from hippo.agent.graph import run_agent
+
+    return await run_agent(
+        task,
+        model=opts.model,
+        api_key=api_key,
+        tools=tools,
+        tracer=tracer,
+        recalled=recalled,
+        token_budget=settings.hippo_token_budget,
+    )
+
+
+async def _run_graph(
+    task, tools, tracer, opts, api_key, recalled, settings, resume: bool
+) -> tuple[str, str]:
+    """Returns (final_text, task_status) where task_status is done|escalated."""
+    from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+
+    from hippo.agent.graph import build_graph, initial_state
+    from hippo.agent.state import RunContext
+
+    ctx = RunContext(
+        tools=tools,
+        tracer=tracer,
+        model=opts.model,
+        api_key=api_key,
+        token_budget=settings.hippo_token_budget,
+    )
+    config = {"configurable": {"thread_id": opts.task_id}}
+    async with AsyncSqliteSaver.from_conn_string(str(opts.data_dir / "checkpoints.db")) as saver:
+        graph = build_graph(saver)
+        if resume:
+            snapshot = await graph.aget_state(config)
+            if not snapshot.values:
+                raise RuntimeError(
+                    f"no checkpoint for {opts.task_id}; it never reached the planner. "
+                    f"Run it again with `hippo run`."
+                )
+            if not snapshot.next:
+                return snapshot.values.get("final") or "(task had already finished)", "done"
+            console.print(f"[dim]resuming at {', '.join(snapshot.next)}[/dim]")
+            tracer.emit("resume", next=list(snapshot.next))
+            result = await graph.ainvoke(None, config=config, context=ctx)
+        else:
+            result = await graph.ainvoke(initial_state(task, recalled), config=config, context=ctx)
+
+    plan = result.get("plan") or []
+    if len(plan) > 1 or any(int(s.get("attempts") or 0) > 1 for s in plan):
+        console.print(
+            "[dim]"
+            + " | ".join(f"{s['id']}:{s.get('status')}(x{s.get('attempts', 0)})" for s in plan)
+            + f"  replans={result.get('replans', 0)}[/dim]"
+        )
+    status = "escalated" if result.get("status") == "failed" else "done"
+    return result.get("final") or "(no final answer)", status
 
 
 @app.command()

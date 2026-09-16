@@ -11,9 +11,34 @@ hippo run "What Python packages does this repo declare?"
 hippo trace               # list run ids
 ```
 
-Flags: `--no-mcp` local filesystem tools only · `--write` allow write/delete/commit · `--oneshot` no tools · `--no-memory` skip recall/persist.
+Flags: `--no-mcp` local filesystem tools only · `--write` allow write/delete/commit · `--single` one agent, no planner/reviewer · `--oneshot` no tools · `--no-memory` skip recall/persist.
 
-`hippo memory "<query>"` searches Seahorse (or Chroma). `hippo tasks` lists SQLite task rows.
+`hippo memory "<query>"` searches Seahorse (or Chroma). `hippo tasks` lists SQLite task rows. `hippo resume TASK_ID` continues an interrupted run from its last checkpoint.
+
+### How a run works
+
+```
+recall (Seahorse/Chroma)
+  -> planner   : 1-4 subtasks, each with goal + allowed tools + step budget
+  -> worker    : tool loop on ONE subtask, returns {result, evidence, confidence}
+  -> reviewer  : approve | revise (worker retries once with feedback) | escalate
+  -> planner   : re-plan once on escalation, keeping finished subtasks
+  -> finalize  : answer from all subtask results (partial answer if escalated)
+  -> persist   : episode summary + durable facts written to memory
+```
+
+Every node boundary is a LangGraph checkpoint in `.hippo/checkpoints.db` (thread = task id), so a killed
+process resumes at the node it was in. Tools, tracer and the LLM travel in LangGraph's runtime context,
+not in state, so nothing non-serializable is checkpointed.
+
+Working context is compressed inside a subtask: when the prompt exceeds `HIPPO_TOKEN_BUDGET`, older
+tool turns are summarized into one note and the last 4 turns stay verbatim (`agent/context.py`).
+When a subtask's tool budget runs out the worker gets one final no-tools turn, so a tight budget yields
+a partial answer with "unverified" flagged, not silence.
+
+MCP servers come from `mcp.json`: filesystem via `npx @modelcontextprotocol/server-filesystem`, git via
+the official Python `mcp-server-git` (`@modelcontextprotocol/server-git` does not exist on npm).
+`hippo trace TASK_ID` prints the JSONL trace: plan, per-subtask tool calls, reviews, compressions.
 
 Memory backend: `HIPPO_MEMORY_BACKEND=auto` (default) uses Seahorse when `SEAHORSE_API_KEY` is set, else local Chroma under `.hippo/chroma`. Force with `seahorse` or `chroma`.
 

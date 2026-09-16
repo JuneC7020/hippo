@@ -5,8 +5,8 @@
       "args": ["-y", "@modelcontextprotocol/server-filesystem", "."]
     },
     "git": {
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-git", "."]
+      "command": "python",
+      "args": ["-m", "mcp_server_git", "--repository", "."]
     },
     "seahorse": {
       "command": "python",
