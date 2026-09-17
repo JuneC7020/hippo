@@ -28,6 +28,9 @@ class ChromaStore:
         self._col = self._client.get_or_create_collection(collection)
         self.collection = collection
 
+    def count(self) -> int:
+        return int(self._col.count())
+
     def add(self, text: str, *, metadata: dict | None = None, id: str | None = None) -> str:
         doc_id = id or uuid.uuid4().hex
         self._col.add(ids=[doc_id], documents=[text], metadatas=[_flat_meta(metadata)])

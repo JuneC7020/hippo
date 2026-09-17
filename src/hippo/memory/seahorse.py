@@ -165,3 +165,18 @@ class SeahorseStore:
     def delete(self, id: str) -> None:
         if self._bind_existing():
             self._vs.delete(ids=[id])
+
+    def count(self) -> int:
+        """Indexed rows if the table reports them, else 0 (flush-pending tables look empty)."""
+        tables = list_tables(self._vs, self.table_name)
+        ready = [t for t in tables if t.get("status") == READY]
+        if not ready:
+            return 0
+        t = ready[0]
+        for key in ("indexed_row_count", "indexed-row-count", "row_count", "row-count"):
+            if t.get(key) is not None:
+                try:
+                    return int(t[key])
+                except (TypeError, ValueError):
+                    continue
+        return 0

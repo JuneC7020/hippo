@@ -1,0 +1,17 @@
+$ hippo memory "invoicely tests discounts money"
+backend=chroma
+- [fact] Project: invoicely
+- [fact] Discounts are rounded half up to a cent
+- [episode] Onboarded invoicely ... 2 failing tests of 5 (discount rounding).
+  Tests: python -m pytest -q
+
+$ python -m hippo.mcp_server --env-file .env     # what Cursor launches
+hippo-memory: backend chroma
+# Cursor calls memory_status + memory_search
+backend: chroma
+episodes: episodes (5 rows)
+facts: facts (12 rows)
+- [fact] Project: invoicely
+- [fact] Discounts are rounded half up to a cent
+- [episode] Onboarded invoicely ... 2 failing tests of 5
+shared store: yes

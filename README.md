@@ -37,6 +37,16 @@ scripts/demo2_fix_test.sh        #          .\scripts\demo2_fix_test.ps1   (then
 Transcripts above are lightly condensed from real runs with `gpt-4o-mini`; traces are in
 `docs/demo*.txt`. The SVGs are rendered from those transcripts by `scripts/render_demo_svg.py`.
 
+**Demo 3 - the same memory, over MCP.** After demo 1, Cursor (or any MCP client) searches the
+store hippo just wrote. hippo skips this server internally; other processes connect. Setup:
+[`docs/cursor.md`](docs/cursor.md). Protocol check without the IDE:
+
+```bash
+python scripts/demo3_mcp_share.py
+```
+
+![demo 3](docs/demo3.svg)
+
 ## Architecture
 
 ```mermaid
@@ -60,6 +70,7 @@ flowchart TB
         FS["filesystem MCP<br/>(npx server-filesystem)"]
         GIT["git MCP<br/>(python mcp-server-git)"]
         PT["local run_pytest<br/>(fixed command, sandboxed to workspace)"]
+        MEM["hippo-memory MCP<br/>(Cursor and other clients;<br/>hippo CLI skips this server)"]
     end
 
     subgraph Memory["Memory layer"]
@@ -74,6 +85,7 @@ flowchart TB
     F -- summarize + persist --> EP & FA
     W --- WC
     EP & FA --> VS[("Seahorse<br/>or Chroma fallback")]
+    MEM --> EP & FA
     Graph --- CK[("checkpoints.db<br/>hippo resume")]
 ```
 
@@ -138,7 +150,9 @@ Environment (`.env`): `OPENAI_API_KEY`, `HIPPO_MODEL` (default `gpt-4o-mini`), `
 3. **Tools live behind MCP.** filesystem and git are separate processes speaking a protocol, so they
    can be swapped or added without touching agent code; the same wrapper turns any server's JSON
    schema into a typed LangChain tool. The one local tool, `run_pytest`, is a fixed command (not a
-   shell) confined to the workspace, so it is safe without `--write`.
+   shell) confined to the workspace, so it is safe without `--write`. hippo's *own* memory is also
+   an MCP server (`python -m hippo.mcp_server`) so Cursor can search the same store; the CLI skips
+   that server to avoid opening Chroma twice in one process.
 
 4. **What the planner hands down and what comes back.** Down: one-sentence goal, *extra* allowed
    tools, step budget. Every worker also gets a baseline of read tools and `run_pytest` - reading
@@ -190,18 +204,23 @@ These are all from `hippo trace` of real runs, not hypotheticals.
 - Prompt-injection defence is the tool whitelist and the `--write` gate, nothing semantic.
 - `gpt-4o-mini` plans conservatively (often a single "read the README" subtask); demos use
   explicit prompts. `--demo` switches to `HIPPO_DEMO_MODEL`.
+- Local Chroma is one-process-at-a-time on a given data dir (Windows file lock). CLI and Cursor
+  should take turns, not overlap. Seahorse does not have this limit.
 
 ## Development
 
 ```bash
 pip install -e ".[dev]"
 ruff check src tests scripts && ruff format --check src tests scripts
-pytest -q                      # 45 tests, no network: FakeLLM drives the graph
+pytest -q                      # no network: FakeLLM drives the graph; MCP server round-trip uses local Chroma
 ```
+
+Interview deck (keyboard: ← →): open [`docs/slides.html`](docs/slides.html) in a browser.
 
 ```
 src/hippo/
   cli.py                  run / resume / tasks / memory / trace
+  mcp_server.py           hippo-memory MCP server (search / remember / ingest / status)
   agent/graph.py          planner, worker, reviewer, finalize nodes + tool_loop
   agent/context.py        token counting, compression of old tool turns
   agent/state.py          checkpointed state types, RunContext (not checkpointed)
@@ -210,7 +229,8 @@ src/hippo/
   memory/                 MemoryStore protocol, SeahorseStore, ChromaStore, MemoryManager
   store/sqlite.py         task rows (LangGraph checkpoints live in checkpoints.db)
 examples/sandbox/         demo target repo (invoicely) with a deliberate bug
-scripts/                  demo1/demo2 runners, Seahorse tools, SVG renderer
+scripts/                  demo1/demo2/demo3, Seahorse tools, SVG renderer
+docs/                     architecture, demo transcripts+SVGs, Cursor MCP setup, slides.html
 docker/Dockerfile         python:3.12-slim + node 20 + git, ENTRYPOINT hippo
 ```
 

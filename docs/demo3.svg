@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="355" viewBox="0 0 880 355" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13">
+<rect width="100%" height="100%" rx="8" fill="#0d1117"/>
+<text x="16" y="30" fill="#58a6ff" opacity="0">$ hippo memory &quot;invoicely tests discounts money&quot;<animate attributeName="opacity" from="0" to="1" begin="0.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="49" fill="#c9d1d9" opacity="0">backend=chroma<animate attributeName="opacity" from="0" to="1" begin="0.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="68" fill="#f85149" opacity="0">- [fact] Project: invoicely<animate attributeName="opacity" from="0" to="1" begin="1.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="87" fill="#f85149" opacity="0">- [fact] Discounts are rounded half up to a cent<animate attributeName="opacity" from="0" to="1" begin="1.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="106" fill="#f85149" opacity="0">- [episode] Onboarded invoicely ... 2 failing tests of 5 (discount rounding).<animate attributeName="opacity" from="0" to="1" begin="2.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="125" fill="#c9d1d9" opacity="0">  Tests: python -m pytest -q<animate attributeName="opacity" from="0" to="1" begin="2.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="144" fill="#c9d1d9" opacity="0"><animate attributeName="opacity" from="0" to="1" begin="3.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="163" fill="#58a6ff" opacity="0">$ python -m hippo.mcp_server --env-file .env     # what Cursor launches<animate attributeName="opacity" from="0" to="1" begin="3.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="182" fill="#c9d1d9" opacity="0">hippo-memory: backend chroma<animate attributeName="opacity" from="0" to="1" begin="4.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="201" fill="#8b949e" opacity="0"># Cursor calls memory_status + memory_search<animate attributeName="opacity" from="0" to="1" begin="4.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="220" fill="#c9d1d9" opacity="0">backend: chroma<animate attributeName="opacity" from="0" to="1" begin="5.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="239" fill="#c9d1d9" opacity="0">episodes: episodes (5 rows)<animate attributeName="opacity" from="0" to="1" begin="5.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="258" fill="#c9d1d9" opacity="0">facts: facts (12 rows)<animate attributeName="opacity" from="0" to="1" begin="6.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="277" fill="#f85149" opacity="0">- [fact] Project: invoicely<animate attributeName="opacity" from="0" to="1" begin="6.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="296" fill="#f85149" opacity="0">- [fact] Discounts are rounded half up to a cent<animate attributeName="opacity" from="0" to="1" begin="7.00s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="315" fill="#f85149" opacity="0">- [episode] Onboarded invoicely ... 2 failing tests of 5<animate attributeName="opacity" from="0" to="1" begin="7.50s" dur="0.15s" fill="freeze"/></text>
+<text x="16" y="334" fill="#c9d1d9" opacity="0">shared store: yes<animate attributeName="opacity" from="0" to="1" begin="8.00s" dur="0.15s" fill="freeze"/></text>
+</svg>

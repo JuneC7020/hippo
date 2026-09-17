@@ -8,9 +8,9 @@
       "command": "python",
       "args": ["-m", "mcp_server_git", "--repository", "${GIT_ROOT}"]
     },
-    "seahorse": {
+    "memory": {
       "command": "python",
-      "args": ["mcp_servers/seahorse_server.py"]
+      "args": ["-m", "hippo.mcp_server"]
     }
   }
 }

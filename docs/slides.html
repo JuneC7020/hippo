@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>hippo — 장기기억 CLI 에이전트</title>
+<style>
+  :root { --bg:#0d1117; --fg:#c9d1d9; --dim:#8b949e; --accent:#58a6ff; --ok:#3fb950; --warn:#d29922; --bad:#f85149; --card:#161b22; --line:#30363d; }
+  * { box-sizing: border-box; }
+  html, body { margin:0; height:100%; background:var(--bg); color:var(--fg); font: 20px/1.45 "Pretendard", "Noto Sans KR", system-ui, sans-serif; }
+  .deck { height:100%; overflow:hidden; }
+  .slide { display:none; height:100%; padding:56px 72px 72px; flex-direction:column; justify-content:center; max-width:1100px; margin:0 auto; }
+  .slide.on { display:flex; }
+  h1 { font-size: 42px; font-weight: 650; margin:0 0 12px; letter-spacing:-0.02em; }
+  h2 { font-size: 32px; font-weight: 650; margin:0 0 24px; }
+  .kicker { color:var(--accent); font-size:14px; letter-spacing:0.12em; text-transform:uppercase; margin-bottom:16px; }
+  .sub { color:var(--dim); font-size:20px; max-width:40em; }
+  .one { font-size:28px; line-height:1.4; max-width:22em; }
+  ul { margin:0; padding-left:1.2em; }
+  li { margin: 8px 0; }
+  .row { display:flex; gap:16px; flex-wrap:wrap; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; flex:1; min-width:200px; }
+  .card h3 { margin:0 0 8px; font-size:16px; color:var(--accent); font-weight:600; }
+  .card p, .card li { font-size:16px; color:var(--fg); margin:0; }
+  .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size:15px; }
+  pre { background:var(--card); border:1px solid var(--line); border-radius:10px; padding:16px 18px; font: 14px/1.45 ui-monospace, Menlo, Consolas, monospace; overflow:auto; white-space:pre-wrap; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); } .dim { color:var(--dim); }
+  table { border-collapse:collapse; width:100%; font-size:16px; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); vertical-align:top; }
+  th { color:var(--dim); font-weight:500; font-size:13px; }
+  footer { position:fixed; bottom:20px; left:72px; right:72px; display:flex; justify-content:space-between; color:var(--dim); font-size:13px; }
+  kbd { border:1px solid var(--line); border-radius:4px; padding:0 6px; font-size:12px; }
+</style>
+</head>
+<body>
+<div class="deck" id="deck">
+
+<section class="slide on">
+  <div class="kicker">P1 · github.com/JuneC7020/hippo</div>
+  <h1>hippo</h1>
+  <p class="one">세션이 끊겨도 이어서 일하는 터미널 에이전트.<br/>어제 분석한 레포를 오늘 기억하고, 실패한 테스트를 위임·리뷰까지 끝냅니다.</p>
+  <p class="sub" style="margin-top:28px">최민준 · MCP + Seahorse/Chroma + LangGraph · 2026.09</p>
+</section>
+
+<section class="slide">
+  <div class="kicker">문제</div>
+  <h2>코딩 에이전트는 매 세션이 첫날입니다</h2>
+  <ul>
+    <li>컨텍스트 창은 한 번의 대화입니다. 창을 닫으면 레포 구조·컨벤션·어제 깨진 테스트가 사라집니다.</li>
+    <li>한 에이전트가 계획·실행·검증을 한꺼번에 하면, 실패해도 같은 실수를 반복합니다.</li>
+    <li>도구가 에이전트 코드에 붙어 있으면 교체할 때마다 프롬프트를 다시 짭니다.</li>
+  </ul>
+</section>
+
+<section class="slide">
+  <div class="kicker">한 줄 구조</div>
+  <h2>기억은 프로세스 밖에, 일은 역할로 나눕니다</h2>
+  <div class="row">
+    <div class="card"><h3>CLI</h3><p>Typer. <span class="mono">run / resume / memory / trace</span></p></div>
+    <div class="card"><h3>Orchestrator</h3><p>LangGraph. planner → worker → reviewer. 체크포인트 = resume</p></div>
+    <div class="card"><h3>Tools</h3><p>MCP filesystem · git · pytest. 화이트리스트 + <span class="mono">--write</span></p></div>
+    <div class="card"><h3>Memory</h3><p>에피소드 / 사실 분리. Seahorse, 없으면 Chroma. MCP로 Cursor와 공유</p></div>
+  </div>
+</section>
+
+<section class="slide">
+  <div class="kicker">데모 1 · 약 20초</div>
+  <h2>온보딩 한 번, 도구 없이 다시 묻기</h2>
+  <pre>$ hippo run -w examples/sandbox "Onboard me … run the tests …"
+s1:done | s2:done | s3:done | s4:done
+2 failing tests (discount rounding, total+VAT). Money = integer cents.
+
+$ hippo run --oneshot "Were any tests failing last time?"
+memory backend=chroma  recalled=5
+Last time, 2 tests were failing: discount rounding and total calculations.</pre>
+  <p class="sub">세션 2는 새 프로세스, 도구 없음. 답은 전부 회상에서 옵니다.</p>
+</section>
+
+<section class="slide">
+  <div class="kicker">데모 2 · 63초 · gpt-4o-mini</div>
+  <h2>실패 테스트를 위임하고, 로그로 리뷰합니다</h2>
+  <pre>s1  run_pytest          → exit 1, 2 failed     <span class="ok">APPROVE</span>
+s2  read pricing.py     → floor division       <span class="warn">REVISE</span> (값 없음) → <span class="ok">APPROVE</span>
+s3  edit_file + pytest  → round(), exit 0      <span class="ok">APPROVE</span>
+s4  run_pytest          → 5 passed             <span class="ok">APPROVE</span></pre>
+  <p class="sub">reviewer는 worker의 산문이 아니라 tool log(diff, exit code)를 봅니다. 그 전에는 통과한 수정을 두 번 거부했습니다.</p>
+</section>
+
+<section class="slide">
+  <div class="kicker">데모 3</div>
+  <h2>터미널에서 쓴 기억을 Cursor가 읽습니다</h2>
+  <ul>
+    <li>같은 스토어를 MCP 서버(<span class="mono">python -m hippo.mcp_server</span>)로 노출.</li>
+    <li>hippo CLI는 이 서버를 건너뜁니다(회상은 직접 주입, Chroma 이중 오픈 방지).</li>
+    <li>Cursor는 다른 프로세스이므로 <span class="mono">memory_search</span>로 어제 에피소드를 가져옵니다.</li>
+  </ul>
+  <p class="sub" style="margin-top:20px">설정: <span class="mono">docs/cursor.md</span> · 프로토콜 검증: <span class="mono">scripts/demo3_mcp_share.py</span></p>
+</section>
+
+<section class="slide">
+  <div class="kicker">설계 결정 · 왜</div>
+  <h2>면접에서 물을 여섯 가지</h2>
+  <table>
+    <tr><th></th><th>결정</th><th>왜</th></tr>
+    <tr><td>1</td><td>에피소드 / 사실 테이블 분리</td><td>검색 의도가 다름. 회상 시 에피소드 슬롯 보장</td></tr>
+    <tr><td>2</td><td>압축 ≠ 회상</td><td>압축은 한 런의 연속성, 회상은 런 사이의 선택적 정밀도</td></tr>
+    <tr><td>3</td><td>도구는 MCP</td><td>프로세스 경계. 스키마만 맞으면 서버를 갈아끼움</td></tr>
+    <tr><td>4</td><td>planner는 목표·쓰기권한·예산</td><td>읽기+pytest는 기본 도구. 예산 최소 6, 소진 시 마지막 무도구 턴</td></tr>
+    <tr><td>5</td><td>reviewer는 별도 에이전트</td><td>호출 1회 비용. 재시도 1 → 재계획 1 → 부분 결과. 무한 루프 없음</td></tr>
+    <tr><td>6</td><td>도구는 graph state에 안 넣음</td><td>체크포인트 직렬화. resume가 새 프로세스에서 MCP를 다시 연결</td></tr>
+  </table>
+</section>
+
+<section class="slide">
+  <div class="kicker">라이브에서 깨진 것</div>
+  <h2>가설이 아니라 hippo trace에 남아 있습니다</h2>
+  <ul>
+    <li><b>anyio cancel scope</b> — MCP 클라이언트를 전용 asyncio task에 가둠.</li>
+    <li><b>edit_file 스키마가 list로 납작해짐</b> — 중첩 pydantic. 모델이 키를 네 번 지어냄.</li>
+    <li><b>경로 추측에 예산 소진</b> — workspace 트리 주입 + 동일 호출 반복 경고.</li>
+    <li><b>planner가 edit만 허용</b> — 읽기는 기본권. planner는 쓰기만 결정.</li>
+    <li><b>Seahorse flush 408</b> — 폴백(Chroma)을 설계한 실제 이유. 에이전트 코드 경로는 동일.</li>
+  </ul>
+</section>
+
+<section class="slide">
+  <div class="kicker">한계를 먼저</div>
+  <h2>질문 나오기 전에 말할 것</h2>
+  <ul>
+    <li>단일 사용자·단일 머신. SQLite → Postgres 전환 지점만 명시.</li>
+    <li>reviewer는 <em>테스트가 통과했는가</em>이지 <em>수정이 옳은가</em>가 아님. 데모 2의 <span class="mono">round()</span>는 banker's rounding.</li>
+    <li>회상 품질은 아직 정량 평가 없음. dense top-k + 에피소드 몫.</li>
+    <li>프롬프트 인젝션 방어는 도구 화이트리스트와 <span class="mono">--write</span> 게이트.</li>
+  </ul>
+</section>
+
+<section class="slide">
+  <div class="kicker">한 줄로</div>
+  <h1>기억은 벡터 DB에,<br/>일은 역할에,<br/>도구는 프로세스 밖에.</h1>
+  <p class="sub" style="margin-top:24px"><span class="mono">github.com/JuneC7020/hippo</span> · MIT · 테스트 통과 · Docker 한 줄</p>
+</section>
+
+</div>
+<footer>
+  <span>hippo · 최민준</span>
+  <span><kbd>←</kbd> <kbd>→</kbd> <kbd>Space</kbd> · <span id="pos">1 / 10</span></span>
+</footer>
+<script>
+const slides = [...document.querySelectorAll(".slide")];
+let i = 0;
+function show(n) {
+  i = Math.max(0, Math.min(slides.length - 1, n));
+  slides.forEach((s, k) => s.classList.toggle("on", k === i));
+  document.getElementById("pos").textContent = (i + 1) + " / " + slides.length;
+}
+document.addEventListener("keydown", e => {
+  if (["ArrowRight", "ArrowDown", "PageDown", " ", "Enter"].includes(e.key)) { e.preventDefault(); show(i + 1); }
+  if (["ArrowLeft", "ArrowUp", "PageUp", "Backspace"].includes(e.key)) { e.preventDefault(); show(i - 1); }
+  if (e.key === "Home") show(0);
+  if (e.key === "End") show(slides.length - 1);
+});
+</script>
+</body>
+</html>

@@ -1,14 +1,6 @@
-"""P2: MCP server exposing Seahorse search / ingest_file / list_tables. M5."""
+"""Thin launcher kept for the path referenced in mcp.json; the server lives in hippo.mcp_server."""
 
-from __future__ import annotations
-
-import sys
-
-
-def main() -> None:
-    print("seahorse MCP server is stubbed until M5", file=sys.stderr)
-    sys.exit(2)
-
+from hippo.mcp_server import main
 
 if __name__ == "__main__":
     main()

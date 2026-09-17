@@ -13,6 +13,7 @@ hippo CLI (Typer)  run / resume / tasks / memory / trace
   ├─ Tool layer (MCP client; each server in its own asyncio task)
   │    ├─ filesystem MCP  (npx @modelcontextprotocol/server-filesystem)
   │    ├─ git MCP         (python -m mcp_server_git, repo root auto-detected)
+  │    ├─ hippo-memory MCP (python -m hippo.mcp_server; Cursor; CLI skips)
   │    └─ local run_pytest (fixed command, workspace-confined, time-limited)
   ├─ Memory layer
   │    ├─ working context : token budget -> old tool turns compressed to one note
@@ -23,4 +24,4 @@ hippo CLI (Typer)  run / resume / tasks / memory / trace
 ```
 
 Demo transcripts: `demo1.txt`, `demo2.txt`; rendered to `demo1.svg`, `demo2.svg` by
-`../scripts/render_demo_svg.py`.
+`../scripts/render_demo_svg.py`. Cursor setup: `cursor.md`. Interview deck: `slides.html`.

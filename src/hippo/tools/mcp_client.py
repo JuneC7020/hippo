@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field, create_model
 from hippo.tools.registry import ToolRegistry
 from hippo.trace import Tracer
 
-SKIP_SERVERS = frozenset({"seahorse"})  # P2 / M5
+# hippo's own memory server: the CLI already injects recall and persists episodes directly,
+# so connecting to it from inside a run would double-open the Chroma dir. Other clients use it.
+SKIP_SERVERS = frozenset({"memory", "seahorse"})
 
 
 def _npx() -> str:
@@ -190,7 +192,7 @@ class McpHub:
         self._clients.clear()
 
 
-CONNECT_TIMEOUT_S = 30
+CONNECT_TIMEOUT_S = 90
 
 
 class _TaskScopedClient:

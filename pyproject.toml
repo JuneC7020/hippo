@@ -32,6 +32,7 @@ dev = ["pytest>=8.0", "ruff>=0.6"]
 
 [project.scripts]
 hippo = "hippo.cli:app"
+hippo-memory-mcp = "hippo.mcp_server:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
