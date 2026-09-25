@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Literal, TypedDict
 
 from langchain_core.tools import BaseTool
@@ -67,6 +68,13 @@ class RunContext:
     token_budget: int = 8000
     llm_factory: Callable[..., Any] | None = None  # tests inject a fake LLM here
     workspace_tree: str = ""  # shallow file listing shown to workers so they stop guessing paths
+    base_url: str | None = None  # OpenAI-compatible endpoint (OpenRouter); None = OpenAI
+    # Tool exposure for workers: all | search | search_schema (see tools/search.py).
+    exposure: str = "all"
+    retriever: str = "keyword"  # keyword | embedding
+    search_k: int = 5
+    always_on: frozenset[str] | None = None  # short names bound in every mode; None = baseline
+    index_dir: Path | None = None  # where the embedding retriever persists its index
     extra: dict[str, Any] = field(default_factory=dict)
 
 

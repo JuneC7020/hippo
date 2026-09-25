@@ -1,0 +1,138 @@
+{
+  "version": 1,
+  "description": "Single-tool tasks over benchmarks/catalog/synthetic_tools.json. Scoring is deterministic: expected_tools must be called; expected_args_contains are case-insensitive substrings of str(args[key]) on that call.",
+  "tasks": [
+    {
+      "id": "t01_github_issue",
+      "prompt": "Open a GitHub issue in acme/webapp titled 'Login button unresponsive on Safari' explaining that clicking Login does nothing on Safari 17.",
+      "expected_tools": ["github__create_issue"],
+      "expected_args_contains": {"repo": "acme/webapp", "title": "Safari"}
+    },
+    {
+      "id": "t02_slack_message",
+      "prompt": "Post the message 'Deploy finished, all green' to the #releases channel on Slack.",
+      "expected_tools": ["slack__send_message"],
+      "expected_args_contains": {"channel": "releases", "text": "all green"}
+    },
+    {
+      "id": "t03_stripe_refund",
+      "prompt": "Refund the Stripe payment pi_3Nq7Yz2eZvKYlo2C in full; the customer was charged twice.",
+      "expected_tools": ["stripe__create_refund"],
+      "expected_args_contains": {"payment_intent": "pi_3Nq7Yz2eZvKYlo2C"}
+    },
+    {
+      "id": "t04_jira_search",
+      "prompt": "Find all Jira issues in project PAY that are not done yet and list their keys and summaries.",
+      "expected_tools": ["jira__search_issues"],
+      "expected_args_contains": {"jql": "PAY"}
+    },
+    {
+      "id": "t05_pg_indexes",
+      "prompt": "Which indexes exist on the orders table in our Postgres database, and how big are they?",
+      "expected_tools": ["postgres__list_indexes"],
+      "expected_args_contains": {"table": "orders"}
+    },
+    {
+      "id": "t06_s3_presign",
+      "prompt": "Give me a download link for reports/2026-09/summary.pdf in the S3 bucket acme-reports that expires in one hour.",
+      "expected_tools": ["s3__generate_presigned_url"],
+      "expected_args_contains": {"bucket": "acme-reports", "key": "summary.pdf"}
+    },
+    {
+      "id": "t07_sentry_resolve",
+      "prompt": "Mark Sentry issue 4821337 as resolved.",
+      "expected_tools": ["sentry__resolve_issue"],
+      "expected_args_contains": {"issue_id": "4821337"}
+    },
+    {
+      "id": "t08_datadog_metric",
+      "prompt": "Show me the p95 request latency of the checkout service in Datadog over the last hour (now is 1758535200).",
+      "expected_tools": ["datadog__query_metrics"],
+      "expected_args_contains": {"query": "checkout"}
+    },
+    {
+      "id": "t09_notion_page",
+      "prompt": "Create a Notion page called 'Q4 Roadmap' under the parent page 8f3a2b1c.",
+      "expected_tools": ["notion__create_page"],
+      "expected_args_contains": {"title": "Q4 Roadmap", "parent_id": "8f3a2b1c"}
+    },
+    {
+      "id": "t10_linear_issue",
+      "prompt": "Create a Linear issue for team ENG titled 'Rate limiter returns 500 under load' with urgent priority.",
+      "expected_tools": ["linear__create_issue"],
+      "expected_args_contains": {"team_id": "ENG", "title": "Rate limiter"}
+    },
+    {
+      "id": "t11_calendar_event",
+      "prompt": "Put a 30-minute meeting called 'Incident review' on my primary calendar on 2026-09-23 from 15:00 to 15:30 UTC and invite dana@acme.io and lee@acme.io.",
+      "expected_tools": ["calendar__create_event"],
+      "expected_args_contains": {"summary": "Incident review", "attendees": "dana@acme.io"}
+    },
+    {
+      "id": "t12_send_email",
+      "prompt": "Email billing@acme.io with the subject 'Invoice 1042 overdue' asking when we can expect payment.",
+      "expected_tools": ["email__send_email"],
+      "expected_args_contains": {"to": "billing@acme.io", "subject": "1042"}
+    },
+    {
+      "id": "t13_web_search",
+      "prompt": "Search the web for the release notes of PostgreSQL 17 and tell me the top result.",
+      "expected_tools": ["websearch__web_search"],
+      "expected_args_contains": {"query": "PostgreSQL"}
+    },
+    {
+      "id": "t14_confluence_search",
+      "prompt": "Find Confluence pages about the on-call rotation in the OPS space.",
+      "expected_tools": ["confluence__search_pages"],
+      "expected_args_contains": {"cql": "OPS"}
+    },
+    {
+      "id": "t15_ci_trigger",
+      "prompt": "Start a CI pipeline for the project acme/webapp on the branch release/2.4.",
+      "expected_tools": ["ci__trigger_pipeline"],
+      "expected_args_contains": {"project": "acme/webapp", "ref": "release/2.4"}
+    },
+    {
+      "id": "t16_github_merge",
+      "prompt": "Squash-merge pull request #212 in acme/webapp.",
+      "expected_tools": ["github__merge_pull_request"],
+      "expected_args_contains": {"repo": "acme/webapp", "number": "212", "method": "squash"}
+    },
+    {
+      "id": "t17_stripe_cancel_sub",
+      "prompt": "Cancel the Stripe subscription sub_1PqRst, but let it run until the end of the current billing period.",
+      "expected_tools": ["stripe__cancel_subscription"],
+      "expected_args_contains": {"subscription_id": "sub_1PqRst", "at_period_end": "true"}
+    },
+    {
+      "id": "t18_datadog_mute",
+      "prompt": "Mute Datadog monitor 998877 until 1758544800.",
+      "expected_tools": ["datadog__mute_monitor"],
+      "expected_args_contains": {"monitor_id": "998877"}
+    },
+    {
+      "id": "t19_jira_comment",
+      "prompt": "Add a comment on Jira ticket PAY-731 saying the fix is deployed to staging and ready for QA.",
+      "expected_tools": ["jira__add_comment"],
+      "expected_args_contains": {"issue_key": "PAY-731", "body": "staging"}
+    },
+    {
+      "id": "t20_ci_job_log",
+      "prompt": "Show me the last 200 lines of the log of CI job 55123 in project acme/webapp and tell me why it failed.",
+      "expected_tools": ["ci__get_job_log"],
+      "expected_args_contains": {"project": "acme/webapp", "job_id": "55123"}
+    },
+    {
+      "id": "t21_github_push_files",
+      "prompt": "In acme/webapp on the branch docs-update, commit two files in one commit with the message 'docs: add a and b': docs/a.md containing 'A' and docs/b.md containing 'B'.",
+      "expected_tools": ["github__push_files"],
+      "expected_args_contains": {"repo": "acme/webapp", "branch": "docs-update", "files": "docs/a.md"}
+    },
+    {
+      "id": "t22_pg_tables",
+      "prompt": "List the tables in the analytics schema of our Postgres database.",
+      "expected_tools": ["postgres__list_tables"],
+      "expected_args_contains": {"schema": "analytics"}
+    }
+  ]
+}

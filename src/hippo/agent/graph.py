@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Callable
+import time
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from langchain_core.messages import BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
-from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.runtime import Runtime
 
@@ -38,6 +40,10 @@ from hippo.agent.state import (
     Subtask,
     tool_names,
 )
+from hippo.llm import make_chat
+from hippo.metrics import UsageMeter
+from hippo.tools.registry import ToolRegistry
+from hippo.tools.search import Exposure, build_exposure
 from hippo.trace import Tracer
 
 MAX_TOOL_STEPS = 12
@@ -157,7 +163,7 @@ def _first_brace_span(text: str) -> str | None:
 def _make_llm(ctx: RunContext):
     if ctx.llm_factory is not None:
         return ctx.llm_factory(model=ctx.model, api_key=ctx.api_key)
-    return ChatOpenAI(model=ctx.model, api_key=ctx.api_key, temperature=0)
+    return make_chat(ctx.model, api_key=ctx.api_key, base_url=ctx.base_url)
 
 
 def _summarizer(llm) -> Callable[[str], str]:
@@ -180,8 +186,9 @@ def run_once(
     api_key: str,
     tracer: Tracer | None = None,
     recalled: list[str] | None = None,
+    base_url: str | None = None,
 ) -> str:
-    llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
+    llm = make_chat(model, api_key=api_key, base_url=base_url)
     msg = llm.invoke(
         [
             {"role": "system", "content": _with_memory(ONESHOT_SYSTEM, recalled)},
@@ -206,6 +213,9 @@ async def tool_loop(
     model: str = "gpt-4o-mini",
     label: str = "run",
     tool_log: list[dict[str, str]] | None = None,
+    tools_provider: Callable[[], list[BaseTool]] | None = None,
+    meter: UsageMeter | None = None,
+    on_unknown: Callable[[str], str] | None = None,
 ) -> tuple[str, str]:
     """Shared LLM/tool loop. Returns (final_text, stop_reason).
 
@@ -213,13 +223,22 @@ async def tool_loop(
     one last turn *without* tools, so a tight budget yields a partial answer
     instead of nothing (stop_reason "budget_answer").
     If `tool_log` is given, every call is appended as {tool, args, result} (truncated).
+
+    The bound tool set is re-read from `tools_provider()` at every step (default: the
+    fixed `tools` list), which is what lets tool search grow it mid-run. `meter` records
+    what each request cost (schemas included); one is created if not given so the
+    compression budget can count the schema block too.
     """
-    bound = llm.bind_tools(tools) if tools else llm
-    by_name = {t.name: t for t in tools}
+    provider = tools_provider or (lambda: tools)
+    meter = meter or UsageMeter(model=model)
     seen_calls: dict[str, str] = {}  # "name:args" -> result, to catch verbatim retries
 
     for step in range(max_steps + 1):
         last_turn = step == max_steps
+        current = [] if last_turn else list(provider())
+        by_name = {t.name: t for t in current}
+        bound = llm.bind_tools(current) if current else llm
+        overhead = meter.schema_tokens(current) if current else 0
         if last_turn:
             messages.append(
                 HumanMessage(
@@ -229,12 +248,21 @@ async def tool_loop(
             )
         if token_budget and summarize:
             messages, info = compress_messages(
-                messages, summarize=summarize, token_budget=token_budget, model=model
+                messages,
+                summarize=summarize,
+                token_budget=token_budget,
+                model=model,
+                fixed_overhead=overhead,
             )
             if info:
                 tracer.emit("compress", label=label, step=step, **info)
 
-        msg = await (llm if last_turn else bound).ainvoke(messages)
+        t0 = time.perf_counter()
+        msg = await bound.ainvoke(messages)
+        meter.llm_ms += (time.perf_counter() - t0) * 1000
+        usage = meter.record(
+            msg, messages_sent=messages, bound_tools=current, step=step, label=label
+        )
         messages.append(msg)
         calls = [] if last_turn else (getattr(msg, "tool_calls", None) or [])
         names = [c.get("name") if isinstance(c, dict) else getattr(c, "name", "") for c in calls]
@@ -244,6 +272,17 @@ async def tool_loop(
             step=step,
             chars=len(_content_text(getattr(msg, "content", ""))),
             tool_calls=names,
+        )
+        tracer.emit(
+            "usage",
+            label=label,
+            step=step,
+            input_tokens=usage.input_tokens,
+            output_tokens=usage.output_tokens,
+            cache_read=usage.cache_read,
+            tool_schema_tokens=usage.tool_schema_tokens,
+            n_bound_tools=usage.n_bound_tools,
+            estimated=usage.estimated,
         )
         if not calls:
             text = _content_text(getattr(msg, "content", ""))
@@ -255,7 +294,8 @@ async def tool_loop(
             call_id = call["id"] if isinstance(call, dict) else call.id
             tool = by_name.get(name)
             if tool is None:
-                result = f"unknown tool: {name}"
+                result = on_unknown(name) if on_unknown else f"unknown tool: {name}"
+                tracer.emit("unknown_tool", label=label, step=step, tool=name)
             else:
                 try:
                     result = await tool.ainvoke(args)
@@ -268,6 +308,7 @@ async def tool_loop(
                 result += REPEAT_NUDGE
                 tracer.emit("repeat_call", label=label, step=step, tool=name)
             seen_calls[key] = result
+            meter.record_tool_result(name, result)
             if tool_log is not None:
                 tool_log.append(
                     {"tool": name, "args": args_json[:300], "result": _log_tail(result)}
@@ -275,6 +316,76 @@ async def tool_loop(
             messages.append(ToolMessage(content=result, tool_call_id=call_id))
 
     return "Stopped after the tool-call budget.", "max_steps"  # unreachable in practice
+
+
+@dataclass
+class AgentRun:
+    """Everything a single-agent run produced; `hippo bench` scores these."""
+
+    text: str
+    reason: str
+    messages: list[BaseMessage]
+    meter: UsageMeter
+    tool_log: list[dict[str, str]]
+    exposure: Exposure
+
+
+async def run_tool_agent(
+    task: str,
+    *,
+    tools: list[BaseTool],
+    tracer: Tracer,
+    llm: Any = None,
+    model: str = "gpt-4o-mini",
+    api_key: str = "",
+    base_url: str | None = None,
+    max_steps: int = MAX_TOOL_STEPS,
+    recalled: list[str] | None = None,
+    token_budget: int | None = None,
+    exposure: str = "all",
+    retriever: str = "keyword",
+    search_k: int = 5,
+    always_on: Iterable[str] = (),
+    registry: ToolRegistry | None = None,
+    index_dir: Path | None = None,
+    max_active: int | None = None,
+    label: str = "single",
+) -> AgentRun:
+    """Single-agent tool loop with a chosen tool exposure. Returns the full run record."""
+    llm = llm or make_chat(model, api_key=api_key, base_url=base_url)
+    exp = build_exposure(
+        tools,
+        mode=exposure,
+        registry=registry,
+        tracer=tracer,
+        retriever=retriever,
+        k=search_k,
+        always_on=always_on,
+        index_dir=index_dir,
+        max_active=max_active,
+    )
+    system = _with_memory(TOOL_SYSTEM + exp.system_note, recalled)
+    messages: list[BaseMessage] = [SystemMessage(content=system), HumanMessage(content=task)]
+    meter = UsageMeter(model=model)
+    tool_log: list[dict[str, str]] = []
+    tracer.emit("run_start", task=task[:500], model=model, n_tools=len(tools), exposure=exp.mode)
+    text, reason = await tool_loop(
+        llm,
+        tools,
+        messages,
+        tracer=tracer,
+        max_steps=max_steps,
+        token_budget=token_budget,
+        summarize=_summarizer(llm) if token_budget else None,
+        model=model,
+        label=label,
+        tool_log=tool_log,
+        tools_provider=exp.tools_provider,
+        meter=meter,
+        on_unknown=exp.on_unknown,
+    )
+    tracer.emit("run_end", reason=reason, chars=len(text), **meter.as_dict())
+    return AgentRun(text, reason, messages, meter, tool_log, exp)
 
 
 async def run_agent(
@@ -287,29 +398,35 @@ async def run_agent(
     max_steps: int = MAX_TOOL_STEPS,
     recalled: list[str] | None = None,
     token_budget: int | None = None,
+    base_url: str | None = None,
+    exposure: str = "all",
+    retriever: str = "keyword",
+    search_k: int = 5,
+    always_on: Iterable[str] = (),
+    registry: ToolRegistry | None = None,
+    index_dir: Path | None = None,
 ) -> str:
-    """M1 single-agent loop (kept for `hippo run --single`)."""
-    llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
-    messages: list[BaseMessage] = [
-        SystemMessage(content=_with_memory(TOOL_SYSTEM, recalled)),
-        HumanMessage(content=task),
-    ]
-    tracer.emit("run_start", task=task[:500], model=model, n_tools=len(tools))
-    text, reason = await tool_loop(
-        llm,
-        tools,
-        messages,
+    """M1 single-agent loop (`hippo run --single`)."""
+    run = await run_tool_agent(
+        task,
+        tools=tools,
         tracer=tracer,
-        max_steps=max_steps,
-        token_budget=token_budget,
-        summarize=_summarizer(llm) if token_budget else None,
         model=model,
-        label="single",
+        api_key=api_key,
+        base_url=base_url,
+        max_steps=max_steps,
+        recalled=recalled,
+        token_budget=token_budget,
+        exposure=exposure,
+        retriever=retriever,
+        search_k=search_k,
+        always_on=always_on,
+        registry=registry,
+        index_dir=index_dir,
     )
-    tracer.emit("run_end", reason=reason, chars=len(text))
-    if reason != "answer":
-        return text + "\n\n(tool budget reached; ask me to continue with a narrower task)"
-    return text
+    if run.reason != "answer":
+        return run.text + "\n\n(tool budget reached; ask me to continue with a narrower task)"
+    return run.text
 
 
 # --------------------------------------------------------------------------- M3 nodes
@@ -421,6 +538,18 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
     else:
         tools = list(ctx.tools)
     llm = _make_llm(ctx)
+    # Tool exposure: with search modes the worker binds only meta-tools plus what it loads;
+    # the baseline read tools stay always-on so it never spends a search on read_file.
+    always_on = ctx.always_on if ctx.always_on is not None else BASELINE_TOOLS
+    exp = build_exposure(
+        tools,
+        mode=ctx.exposure,
+        tracer=ctx.tracer,
+        retriever=ctx.retriever,
+        k=ctx.search_k,
+        always_on=always_on,
+        index_dir=ctx.index_dir,
+    )
 
     prior = []
     for s in plan[:idx]:
@@ -430,7 +559,7 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
         if s.get("evidence"):
             line += f"\n  evidence: {s['evidence'][:400]}"
         prior.append(line)
-    system = _with_memory(WORKER_SYSTEM, state.get("recalled"))
+    system = _with_memory(WORKER_SYSTEM + exp.system_note, state.get("recalled"))
     user = (
         f"OVERALL TASK (for context only):\n{state['task']}\n\n"
         f"YOUR SUBTASK ({sub['id']}):\n{sub['goal']}"
@@ -450,8 +579,10 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
         subtask=sub["id"],
         attempt=int(sub.get("attempts") or 0) + 1,
         n_tools=len(tools),
+        exposure=exp.mode,
     )
     tool_log: list[dict[str, str]] = []
+    meter = UsageMeter(model=ctx.model)
     text, reason = await tool_loop(
         llm,
         tools,
@@ -463,6 +594,9 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
         model=ctx.model,
         label=sub["id"],
         tool_log=tool_log,
+        tools_provider=exp.tools_provider,
+        meter=meter,
+        on_unknown=exp.on_unknown,
     )
     result, evidence, confidence = _parse_worker_output(text)
     if reason != "answer":
@@ -477,7 +611,12 @@ async def worker_node(state: AgentState, runtime: Runtime[RunContext]) -> dict[s
     )
     plan[idx] = sub
     ctx.tracer.emit(
-        "worker_end", subtask=sub["id"], reason=reason, confidence=confidence, chars=len(result)
+        "worker_end",
+        subtask=sub["id"],
+        reason=reason,
+        confidence=confidence,
+        chars=len(result),
+        **meter.as_dict(),
     )
     history = list(state.get("history") or [])
     history.append(f"{sub['id']} attempt {sub['attempts']}: {result[:120]}")

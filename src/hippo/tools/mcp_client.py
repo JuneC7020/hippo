@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import warnings
 from pathlib import Path
 from typing import Any
 
@@ -16,6 +17,11 @@ from hippo.trace import Tracer
 # hippo's own memory server: the CLI already injects recall and persists episodes directly,
 # so connecting to it from inside a run would double-open the Chroma dir. Other clients use it.
 SKIP_SERVERS = frozenset({"memory", "seahorse"})
+
+# A tool parameter called "schema" (postgres servers) shadows BaseModel.schema(); pydantic warns
+# every time the model is (re)built, including inside langchain's tool-call schema. The field
+# works and the JSON schema keeps the real name, so silence just that message.
+warnings.filterwarnings("ignore", message='Field name "schema"', category=UserWarning)
 
 
 def _npx() -> str:

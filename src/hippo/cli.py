@@ -13,16 +13,30 @@ from rich.json import JSON
 from rich.table import Table
 
 from hippo.config import Settings, load_settings
+from hippo.llm import LLMConfig, resolve_llm
+from hippo.tools.search import normalize_exposure
 from hippo.trace import Tracer, list_trace_ids
 
 app = typer.Typer(help="hippo: long-term memory CLI agent")
 console = Console()
 
 
-def _require_key(settings: Settings) -> None:
-    if not settings.openai_api_key:
-        console.print("[red]OPENAI_API_KEY is empty. Copy .env.example to .env and set it.[/red]")
+def _require_key(settings: Settings, model: str | None = None) -> LLMConfig:
+    cfg = resolve_llm(settings, model)
+    if not cfg.api_key:
+        console.print(
+            f"[red]{cfg.key_env_name} is empty. Copy .env.example to .env and set it.[/red]"
+        )
         raise typer.Exit(1)
+    return cfg
+
+
+def _tool_exposure(flag: str | None, settings: Settings) -> str:
+    try:
+        return normalize_exposure(flag or settings.hippo_tool_exposure)
+    except ValueError as exc:
+        console.print(f"[red]{exc}[/red]")
+        raise typer.Exit(2) from None
 
 
 @dataclass
@@ -36,6 +50,7 @@ class RunOptions:
     oneshot: bool = False
     single: bool = False
     no_memory: bool = False
+    exposure: str = "all"
 
 
 @app.command()
@@ -50,12 +65,19 @@ def run(
     workspace: Path | None = typer.Option(
         None, "--workspace", "-w", help="Repository to work in (default HIPPO_WORKSPACE or .)"
     ),
+    tools: str | None = typer.Option(
+        None,
+        "--tools",
+        help="Tool exposure: all | search | search-schema (default HIPPO_TOOL_EXPOSURE)",
+    ),
+    model: str | None = typer.Option(None, "--model", help="Override HIPPO_MODEL for this run"),
 ) -> None:
     """Run a task: recall memory -> plan -> work -> review -> answer -> store an episode."""
     settings = load_settings()
-    _require_key(settings)
+    chosen = model or (settings.hippo_demo_model if demo else settings.hippo_model)
+    _require_key(settings, chosen)
     opts = RunOptions(
-        model=settings.hippo_demo_model if demo else settings.hippo_model,
+        model=chosen,
         workspace=Path(workspace or settings.hippo_workspace).resolve(),
         data_dir=Path(settings.hippo_data_dir),
         task_id=uuid.uuid4().hex[:12],
@@ -64,6 +86,7 @@ def run(
         oneshot=oneshot,
         single=single,
         no_memory=no_memory,
+        exposure=_tool_exposure(tools, settings),
     )
     asyncio.run(_run_async(task, settings, opts, resume=False))
 
@@ -76,12 +99,14 @@ def resume(
     write: bool = typer.Option(False, "--write"),
     no_memory: bool = typer.Option(False, "--no-memory"),
     workspace: Path | None = typer.Option(None, "--workspace", "-w"),
+    tools: str | None = typer.Option(None, "--tools"),
 ) -> None:
     """Continue an interrupted or failed task from its last LangGraph checkpoint."""
     from hippo.store.sqlite import connect, get_task
 
     settings = load_settings()
-    _require_key(settings)
+    chosen = settings.hippo_demo_model if demo else settings.hippo_model
+    _require_key(settings, chosen)
     data_dir = Path(settings.hippo_data_dir)
     row = get_task(connect(data_dir / "hippo.db"), task_id)
     if row is None:
@@ -91,13 +116,14 @@ def resume(
         console.print(f"[yellow]task {task_id} already finished[/yellow]")
         raise typer.Exit(0)
     opts = RunOptions(
-        model=settings.hippo_demo_model if demo else settings.hippo_model,
+        model=chosen,
         workspace=Path(workspace or settings.hippo_workspace).resolve(),
         data_dir=data_dir,
         task_id=task_id,
         no_mcp=no_mcp,
         write=write,
         no_memory=no_memory,
+        exposure=_tool_exposure(tools, settings),
     )
     asyncio.run(_run_async(row["goal"], settings, opts, resume=True))
 
@@ -128,9 +154,18 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
     from hippo.tools.mcp_client import McpHub, local_fs_tools, run_pytest_tool
     from hippo.tools.registry import ToolRegistry
 
-    api_key = settings.openai_api_key
+    llm_cfg = resolve_llm(settings, opts.model)
+    api_key = llm_cfg.api_key
     tracer = Tracer(opts.data_dir / "traces" / f"{opts.task_id}.jsonl")
-    tracer.emit("meta", task_id=opts.task_id, workspace=str(opts.workspace), resume=resume)
+    tracer.emit(
+        "meta",
+        task_id=opts.task_id,
+        workspace=str(opts.workspace),
+        resume=resume,
+        model=opts.model,
+        provider=llm_cfg.provider,
+        exposure=opts.exposure,
+    )
     db = connect(opts.data_dir / "hippo.db")
     upsert_task(db, opts.task_id, task, "running")
 
@@ -141,7 +176,12 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
     try:
         if opts.oneshot:
             text = run_once(
-                task, model=opts.model, api_key=api_key, tracer=tracer, recalled=recalled
+                task,
+                model=opts.model,
+                api_key=api_key,
+                tracer=tracer,
+                recalled=recalled,
+                base_url=llm_cfg.base_url,
             )
         else:
             mcp_cfg = resolve_mcp_config(Path(settings.hippo_mcp_config))
@@ -152,11 +192,15 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
                 )
                 tools = local_fs_tools(opts.workspace, hub.registry, tracer)
             tools.append(run_pytest_tool(opts.workspace, hub.registry, tracer))
+            if opts.exposure != "all":
+                console.print(f"[dim]tool exposure={opts.exposure}  catalog={len(tools)}[/dim]")
             if opts.single:
-                text = await _run_single(task, tools, tracer, opts, api_key, recalled, settings)
+                text = await _run_single(
+                    task, tools, tracer, opts, llm_cfg, recalled, settings, hub.registry
+                )
             else:
                 text, final_status = await _run_graph(
-                    task, tools, tracer, opts, api_key, recalled, settings, resume
+                    task, tools, tracer, opts, llm_cfg, recalled, settings, resume
                 )
     except KeyboardInterrupt:
         upsert_task(db, opts.task_id, task, "interrupted")
@@ -181,7 +225,12 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
     if mem is not None and not opts.oneshot:
         try:
             saved = mem.persist_run(
-                task=task, answer=text, task_id=opts.task_id, model=opts.model, api_key=api_key
+                task=task,
+                answer=text,
+                task_id=opts.task_id,
+                model=opts.model,
+                api_key=api_key,
+                base_url=llm_cfg.base_url,
             )
             tracer.emit("memory_write", facts=len(saved.get("facts") or []))
         except Exception as exc:  # noqa: BLE001
@@ -193,22 +242,37 @@ async def _run_async(task: str, settings: Settings, opts: RunOptions, *, resume:
     console.print(f"[dim]task_id={opts.task_id}  |  hippo trace {opts.task_id}[/dim]")
 
 
-async def _run_single(task, tools, tracer, opts, api_key, recalled, settings) -> str:
+def _always_on(settings: Settings) -> frozenset[str] | None:
+    """HIPPO_TOOL_ALWAYS_ON as a set; None means 'use the worker baseline'."""
+    raw = (settings.hippo_tool_always_on or "").strip()
+    if not raw:
+        return None
+    return frozenset(x.strip() for x in raw.split(",") if x.strip())
+
+
+async def _run_single(task, tools, tracer, opts, llm_cfg, recalled, settings, registry) -> str:
     from hippo.agent.graph import run_agent
 
     return await run_agent(
         task,
         model=opts.model,
-        api_key=api_key,
+        api_key=llm_cfg.api_key,
+        base_url=llm_cfg.base_url,
         tools=tools,
         tracer=tracer,
         recalled=recalled,
         token_budget=settings.hippo_token_budget,
+        exposure=opts.exposure,
+        retriever=settings.hippo_tool_retriever,
+        search_k=settings.hippo_tool_search_k,
+        always_on=_always_on(settings) or (),
+        registry=registry,
+        index_dir=opts.data_dir / "tool_index",
     )
 
 
 async def _run_graph(
-    task, tools, tracer, opts, api_key, recalled, settings, resume: bool
+    task, tools, tracer, opts, llm_cfg, recalled, settings, resume: bool
 ) -> tuple[str, str]:
     """Returns (final_text, task_status) where task_status is done|escalated."""
     from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
@@ -221,9 +285,15 @@ async def _run_graph(
         tools=tools,
         tracer=tracer,
         model=opts.model,
-        api_key=api_key,
+        api_key=llm_cfg.api_key,
+        base_url=llm_cfg.base_url,
         token_budget=settings.hippo_token_budget,
         workspace_tree=workspace_tree(opts.workspace),
+        exposure=opts.exposure,
+        retriever=settings.hippo_tool_retriever,
+        search_k=settings.hippo_tool_search_k,
+        always_on=_always_on(settings),
+        index_dir=opts.data_dir / "tool_index",
     )
     config = {"configurable": {"thread_id": opts.task_id}}
     async with AsyncSqliteSaver.from_conn_string(str(opts.data_dir / "checkpoints.db")) as saver:
@@ -352,10 +422,143 @@ def format_trace_line(row: dict) -> str:
         body = f"{row.get('event')} {row.get('server')}" + (
             f" ({row.get('tools')} tools)" if row.get("tools") is not None else ""
         )
+    elif kind == "usage":
+        body = (
+            f"{row.get('label')} step {row.get('step')}: in={row.get('input_tokens')} "
+            f"out={row.get('output_tokens')} schema={row.get('tool_schema_tokens')} "
+            f"tools={row.get('n_bound_tools')}"
+        )
+        if row.get("cache_read"):
+            body += f" cached={row.get('cache_read')}"
+        if row.get("estimated"):
+            body += " (est.)"
+    elif kind == "tool_search":
+        hits = row.get("hits") or []
+        body = f"{json.dumps(row.get('query'), ensure_ascii=False)} -> {len(hits)} hit(s): " + (
+            ", ".join(hits[:6]) + (" ..." if len(hits) > 6 else "")
+        )
+    elif kind == "tool_load":
+        body = (
+            "loaded "
+            + ", ".join(row.get("activated") or [])
+            + (f"  unknown: {', '.join(row['unknown'])}" if row.get("unknown") else "")
+        )
     else:
         rest = {k: v for k, v in row.items() if k not in {"ts", "kind"}}
         body = json.dumps(rest, ensure_ascii=False)[:140]
     return f"{ts} {kind:<12} {body}"
+
+
+bench = typer.Typer(help="Token benchmark: tool exposure modes over a synthetic tool catalog.")
+app.add_typer(bench, name="bench")
+
+
+def _csv_list(raw: str) -> list[str]:
+    return [x.strip() for x in raw.split(",") if x.strip()]
+
+
+@bench.command("run")
+def bench_run(
+    modes: str = typer.Option("all,search,search-schema", help="Comma list of exposure modes"),
+    sizes: str = typer.Option("25,75,183", help="Comma list of catalog sizes"),
+    repeats: int = typer.Option(1, help="Runs per (task, mode, size)"),
+    model: str | None = typer.Option(None, help="Model slug (default HIPPO_MODEL)"),
+    tasks: Path | None = typer.Option(None, help="Tasks JSON (default benchmarks/tasks)"),
+    catalog: Path | None = typer.Option(None, help="Catalog JSON (default benchmarks/catalog)"),
+    retriever: str = typer.Option("keyword", help="keyword | embedding"),
+    k: int = typer.Option(5, help="tool_search top-k"),
+    always_on: str = typer.Option("", help="Comma list of tools bound in every mode"),
+    max_steps: int = typer.Option(8, help="Tool-calling rounds before the forced answer"),
+    max_active: int | None = typer.Option(None, help="Cap on activated tools (LRU)"),
+    limit: int | None = typer.Option(None, help="Only the first N tasks"),
+    concurrency: int = typer.Option(2, help="Parallel runs"),
+    out: Path | None = typer.Option(None, help="Output dir (default benchmarks/results/<ts>)"),
+    label: str = typer.Option("", help="Free-text tag stored with the results"),
+) -> None:
+    """Run the grid and write runs.jsonl + summary.md/csv. Uses the real model."""
+    import datetime as dt
+
+    from hippo.bench.catalog import load_catalog
+    from hippo.bench.report import build_report
+    from hippo.bench.runner import BenchConfig, RunRow, run_grid, write_rows
+    from hippo.bench.tasks import load_tasks
+    from hippo.metrics import Prices
+
+    settings = load_settings()
+    chosen = model or settings.hippo_model
+    cfg_llm = _require_key(settings, chosen)
+    stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S")
+    out_dir = out or Path("benchmarks") / "results" / f"{stamp}_{chosen.split('/')[-1]}"
+    prices = Prices(
+        settings.hippo_price_input,
+        settings.hippo_price_cached_input,
+        settings.hippo_price_output,
+    )
+    cfg = BenchConfig(
+        out_dir=out_dir,
+        model=chosen,
+        api_key=cfg_llm.api_key,
+        base_url=cfg_llm.base_url,
+        modes=_csv_list(modes),
+        sizes=[int(s) for s in _csv_list(sizes)],
+        repeats=repeats,
+        tasks=load_tasks(tasks),
+        catalog=load_catalog(catalog),
+        retriever=retriever,
+        search_k=k,
+        always_on=_csv_list(always_on),
+        max_steps=max_steps,
+        max_active=max_active,
+        concurrency=concurrency,
+        prices=prices if prices.known else None,
+        label=label,
+        extra={"provider": cfg_llm.provider, "label": label, "started": stamp},
+    )
+    n_tasks = len(cfg.tasks[: limit or None])
+    n_jobs = len(cfg.modes) * len(cfg.sizes) * cfg.repeats * n_tasks
+    console.print(
+        f"[dim]model={chosen} provider={cfg_llm.provider} tasks={n_tasks} modes={cfg.modes} "
+        f"sizes={cfg.sizes} repeats={repeats} -> {n_jobs} runs  out={out_dir}[/dim]"
+    )
+
+    def progress(row: RunRow, done: int, total: int) -> None:
+        mark = (
+            "[red]ERR[/red]"
+            if row.error
+            else ("[green]ok[/green]" if row.success else "[yellow]miss[/yellow]")
+        )
+        console.print(
+            f"[dim]{done:>4}/{total}[/dim] {mark} {row.task_id:<24} {row.mode:<14} "
+            f"{row.size:>4} tools  in={row.input_tokens:>7}  schema={row.tool_schema_tokens:>6}  "
+            f"steps={row.steps}  {row.wall_ms / 1000:.1f}s"
+            + (f"  {row.error}" if row.error else "")
+        )
+
+    rows = asyncio.run(run_grid(cfg, progress=progress, limit=limit))
+    runs_path = write_rows(rows, out_dir / "runs.jsonl", meta=cfg.meta())
+    md, csv_path = build_report(runs_path, out_dir)
+    console.print(f"[green]wrote[/green] {runs_path}\n       {md}\n       {csv_path}")
+    console.print(md.read_text(encoding="utf-8").split("## Per cell")[0], markup=False)
+
+
+@bench.command("report")
+def bench_report(
+    runs: Path | None = typer.Argument(None, help="runs.jsonl (default: newest under results)"),
+    out: Path | None = typer.Option(None, help="Directory for summary.md/csv (default: same)"),
+) -> None:
+    """Re-aggregate an existing runs.jsonl into summary.md and summary.csv."""
+    from hippo.bench.report import build_report
+
+    if runs is None:
+        results = Path("benchmarks") / "results"
+        candidates = sorted(results.glob("*/runs.jsonl"), key=lambda p: p.stat().st_mtime)
+        if not candidates:
+            console.print("no runs.jsonl under benchmarks/results; run `hippo bench run` first")
+            raise typer.Exit(1)
+        runs = candidates[-1]
+    md, csv_path = build_report(runs, out)
+    console.print(f"[green]wrote[/green] {md}\n       {csv_path}")
+    console.print(md.read_text(encoding="utf-8"), markup=False)
 
 
 if __name__ == "__main__":

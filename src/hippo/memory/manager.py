@@ -5,8 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from langchain_openai import ChatOpenAI
-
+from hippo.llm import make_chat
 from hippo.memory.base import MemoryStore
 from hippo.memory.chroma import ChromaStore
 from hippo.memory.seahorse import SeahorseStore
@@ -93,9 +92,10 @@ class MemoryManager:
         task_id: str,
         model: str,
         api_key: str,
+        base_url: str | None = None,
     ) -> dict[str, Any]:
         """Summarize a finished run and write episode (+ optional facts)."""
-        llm = ChatOpenAI(model=model, api_key=api_key, temperature=0)
+        llm = make_chat(model, api_key=api_key, base_url=base_url)
         raw = llm.invoke(
             [
                 {"role": "system", "content": SUMMARY_SYSTEM},

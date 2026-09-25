@@ -47,24 +47,23 @@ def _text(content: Any) -> str:
     return str(content)
 
 
-def count_tokens(messages: list[BaseMessage], model: str = "gpt-4o-mini") -> int:
-    """Approximate prompt tokens with tiktoken (4 chars/token fallback)."""
-    try:
-        import tiktoken
+def count_tokens(
+    messages: list[BaseMessage], model: str = "gpt-4o-mini", *, fixed_overhead: int = 0
+) -> int:
+    """Approximate prompt tokens with tiktoken (4 chars/token fallback).
 
-        try:
-            enc = tiktoken.encoding_for_model(model)
-        except KeyError:
-            enc = tiktoken.get_encoding("o200k_base")
-    except Exception:  # noqa: BLE001 - tiktoken missing or no network for BPE files
-        enc = None
+    `fixed_overhead` is what the provider adds outside the messages, mainly the
+    tool-definitions block; callers get it from `hippo.metrics.schema_tokens`. Without it,
+    a budget check on a run with many tools sees only a fraction of the real prompt.
+    """
+    from hippo.metrics import count_text_tokens
 
-    total = 0
+    total = fixed_overhead
     for msg in messages:
         body = _text(getattr(msg, "content", ""))
         for call in getattr(msg, "tool_calls", None) or []:
             body += " " + str(call.get("args") if isinstance(call, dict) else call)
-        total += 4 + (len(enc.encode(body)) if enc else len(body) // 4)
+        total += 4 + count_text_tokens(body, model)
     return total
 
 
@@ -105,6 +104,7 @@ def compress_messages(
     token_budget: int,
     model: str = "gpt-4o-mini",
     keep_tail: int = KEEP_TAIL,
+    fixed_overhead: int = 0,
 ) -> tuple[list[BaseMessage], dict[str, Any] | None]:
     """If over budget, replace old turns with one summary message.
 
@@ -112,8 +112,9 @@ def compress_messages(
     first human message are preserved; older turns become a single
     `SystemMessage("Compressed context: ...")`; the last `keep_tail` turns stay
     verbatim. Returns (messages, info) where info is None when nothing happened.
+    `fixed_overhead` (tool schemas) counts against the budget but cannot be compressed.
     """
-    before = count_tokens(messages, model)
+    before = count_tokens(messages, model, fixed_overhead=fixed_overhead)
     if before <= token_budget or len(messages) <= 2 + keep_tail:
         return messages, None
 
@@ -133,11 +134,12 @@ def compress_messages(
     summary = summarize(body).strip()
     note = SystemMessage(content="Compressed context from earlier in this run:\n" + summary)
     new_messages = head + [note] + tail
-    after = count_tokens(new_messages, model)
+    after = count_tokens(new_messages, model, fixed_overhead=fixed_overhead)
     info = {
         "before_tokens": before,
         "after_tokens": after,
         "dropped_messages": len(middle),
         "summary_chars": len(summary),
+        "fixed_overhead": fixed_overhead,
     }
     return new_messages, info

@@ -11,8 +11,24 @@ class Settings(BaseSettings):
     )
 
     openai_api_key: str = ""
+    # OpenRouter (any OpenAI-compatible endpoint works through hippo_base_url).
+    # auto: openrouter when OPENROUTER_API_KEY is set and OPENAI_API_KEY is not, or when the
+    # model slug looks like "vendor/model"; else openai. Or force openai|openrouter.
+    openrouter_api_key: str = ""
+    hippo_provider: str = "auto"
+    hippo_base_url: str = ""
     hippo_model: str = "gpt-4o-mini"
     hippo_demo_model: str = "gpt-4o"
+    # USD per 1M tokens, used by `hippo bench` for cost_usd (0 = unknown, tokens only).
+    hippo_price_input: float = 0.0
+    hippo_price_cached_input: float = 0.0
+    hippo_price_output: float = 0.0
+    # Tool exposure: all (bind every tool), search (tool_search -> tool_load -> call),
+    # search_schema (tool_search returns schemas and activates the hits in one step).
+    hippo_tool_exposure: str = "all"
+    hippo_tool_retriever: str = "keyword"  # keyword | embedding
+    hippo_tool_search_k: int = 5
+    hippo_tool_always_on: str = ""  # comma-separated short tool names bound in every mode
     # auto: Seahorse when SEAHORSE_API_KEY is set, else Chroma. Or force seahorse|chroma.
     hippo_memory_backend: str = "auto"
     seahorse_api_key: str = ""

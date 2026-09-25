@@ -20,11 +20,15 @@ def _flat_meta(metadata: dict | None) -> dict[str, str | int | float | bool]:
 
 
 class ChromaStore:
-    def __init__(self, persist_dir: Path, collection: str) -> None:
+    def __init__(self, persist_dir: Path | None, collection: str) -> None:
+        """On-disk under `persist_dir`, or in-memory when it is None (tool index, tests)."""
         import chromadb
 
-        persist_dir.mkdir(parents=True, exist_ok=True)
-        self._client = chromadb.PersistentClient(path=str(persist_dir))
+        if persist_dir is None:
+            self._client = chromadb.EphemeralClient()
+        else:
+            persist_dir.mkdir(parents=True, exist_ok=True)
+            self._client = chromadb.PersistentClient(path=str(persist_dir))
         self._col = self._client.get_or_create_collection(collection)
         self.collection = collection
 

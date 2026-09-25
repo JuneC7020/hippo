@@ -14,5 +14,8 @@ build/
 *.sqlite
 chroma/
 .chroma/
+# benchmark runs: keep runs.jsonl + summary.*, drop per-run traces and embedding indexes
+benchmarks/results/*/traces/
+benchmarks/results/*/tool_index/
 .DS_Store
 Thumbs.db

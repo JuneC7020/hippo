@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 
+from fakes import FakeLLM
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
@@ -13,44 +14,6 @@ from pydantic import BaseModel
 from hippo.agent import graph as g
 from hippo.agent.state import RunContext
 from hippo.trace import Tracer
-
-
-class FakeLLM:
-    """Routes each call by the system prompt it receives and pops a scripted reply."""
-
-    def __init__(self, script: dict[str, list]) -> None:
-        self.script = {k: list(v) for k, v in script.items()}
-        self.calls: list[str] = []
-
-    def bind_tools(self, _tools):
-        return self
-
-    def _role(self, messages) -> str:
-        system = messages[0].content if isinstance(messages[0], SystemMessage) else ""
-        first = system.split("\n", 1)[0].lower()
-        for key in ("planner", "worker", "reviewer"):
-            if f"the {key} of hippo" in first:
-                return key
-        if "final answer" in first:
-            return "final answer"
-        if "compress" in first:
-            return "compress"
-        return "other"
-
-    def _reply(self, messages):
-        role = self._role(messages)
-        self.calls.append(role)
-        queue = self.script.get(role) or []
-        item = queue.pop(0) if queue else {"content": "{}"}
-        if isinstance(item, AIMessage):
-            return item
-        return AIMessage(content=item["content"] if isinstance(item, dict) else str(item))
-
-    def invoke(self, messages, **_):
-        return self._reply(messages)
-
-    async def ainvoke(self, messages, **_):
-        return self._reply(messages)
 
 
 class EchoArgs(BaseModel):
